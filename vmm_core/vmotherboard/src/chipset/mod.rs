@@ -1167,11 +1167,18 @@ pub(crate) mod tests {
         assert_eq!(data, [0xdd; 4]);
 
         dynamic.lock().region.as_mut().unwrap().map(0x1f80);
+        assert!(!chipset.is_mmio(0x5000));
+        chipset.mmio_read(0, 0x5000, &mut data).await;
+        assert_eq!(data, [!0; 4]);
         chipset.mmio_read(0, 0x1f80, &mut data).await;
         assert_eq!(data, [0x55; 4]);
         chipset.mmio_read(0, 0x2000, &mut data).await;
         assert_eq!(data, [!0; 4]);
 
+        dynamic.lock().region.as_mut().unwrap().map(0x5000);
+        assert!(chipset.is_mmio(0x5000));
+        chipset.mmio_read(0, 0x5000, &mut data).await;
+        assert_eq!(data, [0xdd; 4]);
         dynamic.lock().region.as_mut().unwrap().unmap();
         assert!(!chipset.is_mmio(0x5000));
         chipset.mmio_read(0, 0x5000, &mut data).await;

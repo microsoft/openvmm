@@ -1554,8 +1554,7 @@ mod tests {
         );
     }
 
-    fn rtc_time_source() -> vm_resource::Resource<chipset_resources::CmosRtcTimeSourceHandleKind>
-    {
+    fn rtc_time_source() -> vm_resource::Resource<chipset_resources::CmosRtcTimeSourceHandleKind> {
         chipset_resources::cmos_rtc_time_source::SystemTimeClockHandle {
             delta_milliseconds: 0,
         }
@@ -1718,7 +1717,7 @@ mod tests {
     //       DMA controller.
     // Expected: Each builds when DMA is available and fails with
     //       `NoDmaForFloppy` otherwise.
-    #[cfg(all(
+    #[cfg(any(
         feature = "dev_generic_isa_floppy",
         feature = "dev_winbond_super_io_and_floppy_full",
         feature = "dev_winbond_super_io_and_floppy_stub"
@@ -1729,7 +1728,8 @@ mod tests {
         let power = Arc::new(RecordPower::default());
         let mut resolver = ResourceResolver::new();
         resolver.add_resolver(chipset::dma::resolver::GenericIsaDmaResolver);
-        let variants: [fn() -> BaseChipsetDevices; 3] = [
+        let variants: &[fn() -> BaseChipsetDevices] = &[
+            #[cfg(feature = "dev_generic_isa_floppy")]
             || BaseChipsetDevices {
                 deps_generic_isa_floppy: Some(dev::GenericIsaFloppyDeps {
                     irq: 6,
@@ -1739,6 +1739,7 @@ mod tests {
                 }),
                 ..BaseChipsetDevices::empty()
             },
+            #[cfg(feature = "dev_winbond_super_io_and_floppy_full")]
             || BaseChipsetDevices {
                 deps_winbond_super_io_and_floppy_full: Some(dev::WinbondSuperIoAndFloppyFullDeps {
                     primary_disk_drive: floppy::DriveRibbon::None,
@@ -1746,6 +1747,7 @@ mod tests {
                 }),
                 ..BaseChipsetDevices::empty()
             },
+            #[cfg(feature = "dev_winbond_super_io_and_floppy_stub")]
             || BaseChipsetDevices {
                 deps_winbond_super_io_and_floppy_stub: Some(dev::WinbondSuperIoAndFloppyStubDeps),
                 ..BaseChipsetDevices::empty()
