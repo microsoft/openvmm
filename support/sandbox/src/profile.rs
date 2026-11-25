@@ -113,6 +113,9 @@ impl Profile {
 /// Ordinary grants preserve host restrictions and add `nosuid` and `nodev`;
 /// use [`device`](Self::device) for a single device node.
 ///
+/// Grants for the filesystem root (`/`) are unsupported and rejected by
+/// [`apply`](crate::apply) before staging or mounting the filesystem.
+///
 /// Duplicate grants and lexically nested paths combine independently of
 /// declaration order, retaining permissions already granted by an ancestor.
 /// Combinations requiring both write and execute access are rejected during

@@ -104,7 +104,7 @@ fn apply_filesystem(grants: &[FsGrant]) -> Result<(), Error> {
     let grants = filesystem_mount_plan(grants)?;
     let staging = mount_namespace::create_staging_dir().map_err(fs_required)?;
     if let Err(error) = mount_and_pivot_filesystem(&grants, &staging) {
-        // A `/` grant can stack mounts here. Detach every layer before
+        // Grants can stack mounts here. Detach every layer before
         // removing only the empty backing directory, never bind contents.
         while mount_namespace::umount(&staging).is_ok() {}
         if let Err(cleanup_error) = fs_err::remove_dir(&staging) {
@@ -215,6 +215,12 @@ fn filesystem_mount_plan(grants: &[FsGrant]) -> Result<Vec<FsGrant>, Error> {
 
     let mut plan: Vec<FsGrant> = Vec::new();
     for mut grant in ordered {
+        if grant.path == Path::new("/") {
+            return Err(fs_required(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "filesystem root grants are not supported",
+            )));
+        }
         // Path ordering puts ancestors first. Preserve their permissions in
         // descendant mounts and combine repeated grants before mounting.
         for parent in &plan {
@@ -574,7 +580,7 @@ mod tests {
         // Keep the backing directory open across pivot_root and Landlock.
         let entries = fs_err::read_dir("/tmp").unwrap();
         let mut profile = Profile::deny_all().read_write("/run/grant");
-        if matches!(scenario.as_str(), "missing-grant" | "root-grant") {
+        if scenario == "missing-grant" {
             profile = profile.read("/run/missing");
         }
         if scenario == "root-grant" {
@@ -586,10 +592,15 @@ mod tests {
         hardening::set_no_new_privs().unwrap();
         let result = apply_filesystem(&profile.build().inner.fs);
         match scenario.as_str() {
-            "missing-grant" | "root-grant" => assert!(matches!(
+            "missing-grant" => assert!(matches!(
                 result,
                 Err(Error::ApplyFailed { source, .. })
                     if source.kind() == io::ErrorKind::NotFound
+            )),
+            "root-grant" => assert!(matches!(
+                result,
+                Err(Error::ApplyFailed { source, .. })
+                    if source.kind() == io::ErrorKind::InvalidInput
             )),
             "mount-failure" => assert!(matches!(
                 result,
@@ -713,6 +724,26 @@ mod tests {
                     directory.display(),
                 );
             }
+        }
+    }
+
+    #[test]
+    fn filesystem_grants_reject_root() {
+        for access in [
+            Access::Read,
+            Access::ReadExec,
+            Access::ReadWrite,
+            Access::Device,
+        ] {
+            let grants = [FsGrant {
+                path: PathBuf::from("/"),
+                access,
+            }];
+            assert!(matches!(
+                filesystem_mount_plan(&grants),
+                Err(Error::ApplyFailed { source, .. })
+                    if source.kind() == io::ErrorKind::InvalidInput
+            ));
         }
     }
 
