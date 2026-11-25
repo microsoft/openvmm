@@ -1017,7 +1017,7 @@ impl InodeReservation<'_> {
     fn insert(mut self, inode: VirtioFsInode) -> lx::Result<(Arc<VirtioFsInode>, u64)> {
         let mut inodes = self.inodes.write();
         if self.microvm {
-            inodes.preflight_microvm_insert(&inode)?;
+            inodes.preflight_microvm_reserved_insert(&inode)?;
         }
         let result = inodes.insert_reserved(&self.reservation, inode)?;
         self.committed = true;
