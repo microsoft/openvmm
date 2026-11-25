@@ -2158,6 +2158,23 @@ mod tests {
         assert!(fs.get_inode(FUSE_ROOT_ID).is_ok());
     }
 
+    /// A guest SYMLINK with an empty target fails with `ENOENT`, as Linux's
+    /// `symlink(2)` does, and creates nothing on the host. A microVM share
+    /// refuses it before it reaches the host (see `symlink_tests`); a direct
+    /// share leaves it to the host volume.
+    #[test]
+    fn direct_symlink_rejects_an_empty_target() {
+        let root = tempfile::tempdir().unwrap();
+        let fs = VirtioFs::new(root.path(), None).unwrap();
+
+        assert_eq!(
+            fs.symlink(&request(FUSE_ROOT_ID), "link".as_ref(), "".as_ref())
+                .unwrap_err(),
+            lx::Error::ENOENT
+        );
+        assert!(std::fs::symlink_metadata(root.path().join("link")).is_err());
+    }
+
     /// Returns a direct file system of `root`, or a writable microVM one if
     /// `microvm`, whose root holds the regular file `file`, which the guest
     /// has looked up once, with the file's node ID.

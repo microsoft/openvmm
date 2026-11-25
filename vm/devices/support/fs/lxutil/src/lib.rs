@@ -1835,6 +1835,39 @@ mod tests {
         );
     }
 
+    /// Like Linux's `symlink(2)`, creating a symbolic link to an empty target
+    /// fails with `ENOENT` and creates nothing. On Windows, the empty target,
+    /// which names the link's own directory, would otherwise get an NT link
+    /// from a volume that does not confine paths, and a WSL-style link from
+    /// one that does.
+    #[test]
+    fn symlink_rejects_an_empty_target() {
+        for confine_paths in [false, true] {
+            let env = TestEnv::with_options(LxVolumeOptions::new().confine_paths(confine_paths));
+            env.create_file("testdir/testfile", "test");
+            let link = Path::from_lx("testdir/link").unwrap();
+            assert_eq!(
+                env.volume
+                    .symlink(&link, "", LxCreateOptions::new(0, 0, 0))
+                    .unwrap_err(),
+                lx::Error::ENOENT,
+                "confine_paths={confine_paths}"
+            );
+            assert_eq!(
+                env.volume
+                    .symlink_stat(&link, "", LxCreateOptions::new(0, 0, 0))
+                    .unwrap_err(),
+                lx::Error::ENOENT,
+                "confine_paths={confine_paths}"
+            );
+            assert_eq!(
+                env.volume.lstat(&link).unwrap_err(),
+                lx::Error::ENOENT,
+                "confine_paths={confine_paths}"
+            );
+        }
+    }
+
     #[test]
     fn symlink_ancestors_are_not_walked() {
         fn expect_traversal_error<T>(result: lx::Result<T>) {
