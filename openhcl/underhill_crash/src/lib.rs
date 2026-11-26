@@ -23,6 +23,7 @@ use crate::elf::Elf64_Phdr;
 use crate::elf::PT_NOTE;
 use crate::proto::check_header;
 use crate::proto::make_header;
+use anyhow::Context;
 use fs_err::File;
 use fs_err::os::unix::fs::OpenOptionsExt;
 use futures::AsyncRead;
@@ -45,7 +46,7 @@ use vmbus_async::async_dgram::AsyncSendExt;
 use vmbus_async::pipe::MessagePipe;
 use vmbus_async::pipe::MessageReadHalf;
 use vmbus_async::pipe::MessageWriteHalf;
-use vmbus_user_channel::MappedRingMem;
+use vmbus_ring::RingMem;
 use zerocopy::FromBytes;
 use zerocopy::FromZeros;
 use zerocopy::Immutable;
@@ -109,8 +110,8 @@ impl OsVersionInfo {
     }
 }
 
-async fn read_message<T: IntoBytes + FromBytes + Immutable + KnownLayout>(
-    pipe: &mut MessageReadHalf<'_, MappedRingMem>,
+async fn read_message<T: IntoBytes + FromBytes + Immutable + KnownLayout, M: RingMem>(
+    pipe: &mut MessageReadHalf<'_, M>,
 ) -> anyhow::Result<T> {
     let mut message = T::new_zeroed();
     pipe.recv_exact(message.as_mut_bytes()).await?;
@@ -119,8 +120,8 @@ async fn read_message<T: IntoBytes + FromBytes + Immutable + KnownLayout>(
     Ok(message)
 }
 
-async fn send_dump(
-    mut pipe: MessagePipe<MappedRingMem>,
+async fn send_dump<M: RingMem>(
+    mut pipe: MessagePipe<M>,
     dump_stream: &mut (impl AsyncRead + Unpin),
     os_version: &OsVersionInfo,
     include_kmsg: bool,
@@ -175,7 +176,8 @@ async fn send_dump(
     // The VSP may occasionally send an error code, so running
     // reads and writes in parallel. If the VSP signals an error,
     // here the read_task future will exit with an error, and this
-    // function will error out.
+    // function will error out. Write and channel failures also fail
+    // the transfer.
 
     let write_task = pin!(async move {
         let mut buf = [0u8; crash::MAX_DUMP_PAYLOAD_SIZE];
@@ -194,13 +196,15 @@ async fn send_dump(
             }
         }
 
-        if let Err(e) = streamer.stream_all(&mut buf).await {
-            tracing::error!("Error occurred while streaming dump: {:?}", e);
-        }
+        streamer
+            .stream_all(&mut buf)
+            .await
+            .context("failed to stream dump")?;
 
-        if let Err(e) = streamer.complete(os_version).await {
-            tracing::error!("Error occurred while completing dump: {:?}", e);
-        }
+        streamer
+            .complete(os_version)
+            .await
+            .context("failed to complete dump")?;
 
         // Compute stats
         let wrote_bytes_total = streamer.wrote_bytes_total();
@@ -213,25 +217,32 @@ async fn send_dump(
         Ok::<(), anyhow::Error>(())
     });
 
-    let read_task = pin!(async move {
-        while let Ok(dump_write_resp) =
-            read_message::<crash::DumpWriteResponseV1>(&mut reader).await
-        {
-            let resp_status = dump_write_resp.status;
-            if resp_status != 0 {
-                anyhow::bail!("Host error {resp_status:#x}");
-            }
-        }
+    let read_task = pin!(wait_for_host_error(&mut reader));
 
-        Ok::<(), anyhow::Error>(())
-    });
-
-    futures::select! { // race semantics
-        _ = write_task.fuse() => {},
-        _ = read_task.fuse() => {}
+    // Host-reported errors take precedence over a write task that finishes
+    // in the same poll.
+    futures::select_biased! {
+        result = read_task.fuse() => result,
+        result = write_task.fuse() => result,
     }
+}
 
-    Ok(())
+/// Waits for the host to report a dump write error.
+///
+/// The host only responds to dump writes on failure, so this returns only
+/// on a host error or a channel failure.
+async fn wait_for_host_error<M: RingMem>(
+    reader: &mut MessageReadHalf<'_, M>,
+) -> anyhow::Result<()> {
+    loop {
+        let dump_write_resp: crash::DumpWriteResponseV1 = read_message(reader)
+            .await
+            .context("failed to receive dump write response")?;
+        let resp_status = dump_write_resp.status;
+        if resp_status != 0 {
+            anyhow::bail!("Host error {resp_status:#x}");
+        }
+    }
 }
 
 // This is resilient against recursive crashing as long as
@@ -327,9 +338,9 @@ pub fn main() -> ! {
 
 /// provides useful functions for streaming a core dump
 /// and maintains state
-struct DumpStreamer<'a> {
+struct DumpStreamer<'a, M: RingMem> {
     dump_stream: &'a mut (dyn AsyncRead + Unpin),
-    writer: MessageWriteHalf<'a, MappedRingMem>,
+    writer: MessageWriteHalf<'a, M>,
 
     header: Header,
     max_dump_size: usize,
@@ -338,9 +349,9 @@ struct DumpStreamer<'a> {
     wrote_bytes_total: usize,
 }
 
-impl<'a> DumpStreamer<'a> {
+impl<'a, M: RingMem> DumpStreamer<'a, M> {
     fn new(
-        writer: MessageWriteHalf<'a, MappedRingMem>,
+        writer: MessageWriteHalf<'a, M>,
         dump_stream: &'a mut (impl AsyncRead + Unpin),
         header: Header,
         max_dump_size: usize,
@@ -627,5 +638,226 @@ impl<'a> DumpStreamer<'a> {
 
     fn wrote_bytes_total(&self) -> usize {
         self.wrote_bytes_total
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use futures::io::Cursor;
+    use pal_async::async_test;
+    use std::sync::atomic::Ordering;
+    use test_with_tracing::test;
+    use vmbus_async::pipe::connected_message_pipes;
+    use vmbus_channel::connected_async_channels;
+    use vmbus_ring::FlatRingMem;
+    use vmbus_ring::Ring;
+
+    // Large enough for the biggest message: a full dump data payload.
+    // Tests use the second pipe as the host because only that endpoint
+    // signals channel closure to its peer when dropped.
+    const RING_SIZE: usize = 0x10000;
+    const HOST_ERROR: i32 = 0x8000_4005_u32 as i32;
+
+    fn os_version() -> OsVersionInfo {
+        OsVersionInfo {
+            banner: [0; 256],
+            major_minor: (6, 1),
+        }
+    }
+
+    fn test_dump(len: usize) -> Vec<u8> {
+        (0..len).map(|i| i as u8).collect()
+    }
+
+    /// Answers the capabilities, config, and dump-start requests successfully.
+    async fn host_negotiate(host: &mut MessagePipe<FlatRingMem>) {
+        let (mut reader, mut writer) = host.split();
+
+        let rq: crash::DumpCapabilitiesRequestV1 = read_message(&mut reader).await.unwrap();
+        let resp = crash::DumpCapabilitiesResponseV1 {
+            header: make_header(
+                Some(&rq.header),
+                crash::MessageType::RESPONSE_GET_CAPABILITIES_V1,
+            ),
+            capabilities: crash::Capabilities::new().with_linux_config_v1(true),
+        };
+        writer.send(resp.as_bytes()).await.unwrap();
+
+        let rq: crash::DumpConfigRequestV1 = read_message(&mut reader).await.unwrap();
+        let resp = crash::DumpConfigResponseV1 {
+            header: make_header(
+                Some(&rq.header),
+                crash::MessageType::RESPONSE_GET_NIX_DUMP_CONFIG_V1,
+            ),
+            config: crash::ConfigV1 {
+                max_dump_size: 1 << 30,
+                dump_type: crash::DumpType::ELF,
+            },
+        };
+        writer.send(resp.as_bytes()).await.unwrap();
+
+        let rq: crash::DumpStartRequestV1 = read_message(&mut reader).await.unwrap();
+        let resp = crash::DumpStartResponseV1 {
+            header: make_header(
+                Some(&rq.header),
+                crash::MessageType::RESPONSE_NIX_DUMP_START_V1,
+            ),
+            status: 0,
+        };
+        writer.send(resp.as_bytes()).await.unwrap();
+    }
+
+    /// Receives the next dump-write request header from the guest.
+    async fn host_recv_write_request(
+        reader: &mut MessageReadHalf<'_, FlatRingMem>,
+    ) -> crash::DumpWriteRequestV1 {
+        read_message(reader).await.unwrap()
+    }
+
+    // Test: Transfer a multi-message dump to a host that accepts every write.
+    // Expected: send_dump succeeds and the host receives every byte in order,
+    //       followed by the completion request.
+    #[async_test]
+    async fn send_dump_succeeds_when_host_accepts_dump() {
+        let (guest, mut host) = connected_message_pipes(RING_SIZE);
+        let dump = test_dump(100_000);
+        let mut source = Cursor::new(dump.clone());
+        let os_version = os_version();
+
+        let host_task = async {
+            host_negotiate(&mut host).await;
+            let (mut reader, _writer) = host.split();
+            let mut received = Vec::new();
+            let mut buf = vec![0; crash::MAX_DUMP_PAYLOAD_SIZE];
+            loop {
+                let n = reader.recv(&mut buf).await.unwrap();
+                let header = Header::read_from_prefix(&buf[..n]).unwrap().0;
+                match header.message_type {
+                    crash::MessageType::REQUEST_NIX_DUMP_WRITE_V1 => {
+                        let rq = crash::DumpWriteRequestV1::read_from_bytes(&buf[..n]).unwrap();
+                        let (offset, size) = (rq.offset, rq.size);
+                        assert_eq!(offset as usize, received.len());
+                        let n = reader.recv(&mut buf).await.unwrap();
+                        assert_eq!(n, size as usize);
+                        received.extend_from_slice(&buf[..n]);
+                    }
+                    crash::MessageType::REQUEST_NIX_DUMP_COMPLETE_V1 => break,
+                    ty => panic!("unexpected message type {ty:?}"),
+                }
+            }
+            received
+        };
+
+        let (result, received) =
+            futures::join!(send_dump(guest, &mut source, &os_version, false), host_task);
+
+        result.unwrap();
+        assert!(received == dump, "host received a different dump");
+    }
+
+    // Test: The host rejects a dump write with a nonzero status while the
+    //       guest is still streaming.
+    // Expected: send_dump returns an error instead of reporting success.
+    #[async_test]
+    async fn send_dump_fails_when_host_reports_write_error() {
+        let (guest, mut host) = connected_message_pipes(RING_SIZE);
+        // Much larger than the ring, so streaming cannot finish while the
+        // host stops reading.
+        let mut source = Cursor::new(test_dump(1 << 20));
+        let os_version = os_version();
+
+        let host_task = async {
+            host_negotiate(&mut host).await;
+            let (mut reader, mut writer) = host.split();
+            let rq = host_recv_write_request(&mut reader).await;
+            let resp = crash::DumpWriteResponseV1 {
+                header: make_header(
+                    Some(&rq.header),
+                    crash::MessageType::RESPONSE_NIX_DUMP_WRITE_V1,
+                ),
+                status: HOST_ERROR,
+            };
+            writer.send(resp.as_bytes()).await.unwrap();
+        };
+
+        let (result, ()) =
+            futures::join!(send_dump(guest, &mut source, &os_version, false), host_task);
+
+        let err = result.expect_err("host write error was reported as success");
+        assert!(
+            format!("{err:#}").contains("Host error 0x80004005"),
+            "unexpected error: {err:#}"
+        );
+    }
+
+    // Test: The host closes the channel after the first dump write.
+    // Expected: send_dump returns an error instead of reporting success.
+    #[async_test]
+    async fn send_dump_fails_when_host_closes_channel() {
+        let (guest, mut host) = connected_message_pipes(RING_SIZE);
+        let mut source = Cursor::new(test_dump(1 << 20));
+        let os_version = os_version();
+
+        let host_task = async move {
+            host_negotiate(&mut host).await;
+            let (mut reader, _writer) = host.split();
+            host_recv_write_request(&mut reader).await;
+            // Dropping the host pipe closes the channel.
+        };
+
+        let (result, ()) =
+            futures::join!(send_dump(guest, &mut source, &os_version, false), host_task);
+
+        result.expect_err("closed channel was reported as success");
+    }
+
+    /// An unaligned outgoing consumer offset fails streaming when the writer
+    /// exhausts its cached space. The host stays open and sends no error.
+    #[async_test]
+    async fn send_dump_propagates_streaming_error() {
+        let (guest, host) = connected_async_channels(RING_SIZE);
+        let outgoing = guest.out_ring.mem().clone();
+        let guest = MessagePipe::new(guest).unwrap();
+        let mut host = MessagePipe::new(host).unwrap();
+        let mut source = Cursor::new(test_dump(1 << 20));
+        let os_version = os_version();
+
+        let host_task = async {
+            host_negotiate(&mut host).await;
+            outgoing.control()[1].store(1, Ordering::Relaxed);
+        };
+
+        let (result, ()) =
+            futures::join!(send_dump(guest, &mut source, &os_version, false), host_task);
+
+        let error = result.expect_err("failed streaming was reported as success");
+        assert_eq!(error.to_string(), "failed to stream dump");
+        assert!(error.downcast_ref::<std::io::Error>().is_some());
+    }
+
+    /// The dump fits in the writer's cached ring space, but completion does not.
+    /// Refreshing space then detects the invalid consumer offset, without a
+    /// read-side failure or host error masking the completion error.
+    #[async_test]
+    async fn send_dump_propagates_completion_error() {
+        let (guest, host) = connected_async_channels(4096);
+        let outgoing = guest.out_ring.mem().clone();
+        let guest = MessagePipe::new(guest).unwrap();
+        let mut host = MessagePipe::new(host).unwrap();
+        let mut source = Cursor::new(test_dump(3800));
+        let os_version = os_version();
+
+        let host_task = async {
+            host_negotiate(&mut host).await;
+            outgoing.control()[1].store(1, Ordering::Relaxed);
+        };
+
+        let (result, ()) =
+            futures::join!(send_dump(guest, &mut source, &os_version, false), host_task);
+
+        let error = result.expect_err("failed completion was reported as success");
+        assert_eq!(error.to_string(), "failed to complete dump");
+        assert!(error.downcast_ref::<std::io::Error>().is_some());
     }
 }
