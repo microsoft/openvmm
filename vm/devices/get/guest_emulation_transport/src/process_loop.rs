@@ -552,6 +552,10 @@ pub(crate) struct ProcessLoop<T: RingMem> {
     // GET accepts notifications before the callback registration is processed.
     // Coalesce early events without allocating an unbounded host-driven queue.
     post_live_migration_pending: bool,
+    // IPMI SEL notifications queued for the host but not yet written.
+    ipmi_sel_pending: usize,
+    // IPMI SEL notifications dropped because the pending cap was reached.
+    ipmi_sel_dropped: Counter,
     stats: Stats,
 
     guest_notification_listeners: GuestNotificationListeners,
@@ -638,8 +642,14 @@ struct PipeChannels {
 
 enum WriteRequest {
     Message(Vec<u8>),
+    /// An IPMI SEL notification, counted against [`MAX_PENDING_IPMI_SEL`].
+    IpmiSel(Vec<u8>),
     Flush(Rpc<(), ()>),
 }
+
+/// Maximum IPMI SEL notifications queued for the host but not yet written.
+/// Matches the device's 256/s forwarding limit.
+const MAX_PENDING_IPMI_SEL: usize = 256;
 
 impl HostRequestPipeAccess {
     fn new(
@@ -762,6 +772,8 @@ impl<T: RingMem> ProcessLoop<T> {
             set_debug_interrupt: None,
             post_live_migration: None,
             post_live_migration_pending: false,
+            ipmi_sel_pending: 0,
+            ipmi_sel_dropped: Counter::new(),
         }
     }
 
@@ -835,6 +847,7 @@ impl<T: RingMem> ProcessLoop<T> {
             Box::new([0; get_protocol::MAX_MESSAGE_SIZE]);
 
         let mut outgoing = Vec::new();
+        let mut outgoing_is_ipmi_sel = false;
         loop {
             enum Event {
                 Msg(Msg),
@@ -891,9 +904,16 @@ impl<T: RingMem> ProcessLoop<T> {
                                 return FatalError::FdIo(err);
                             }
                             outgoing.clear();
+                            if std::mem::take(&mut outgoing_is_ipmi_sel) {
+                                self.ipmi_sel_pending -= 1;
+                            }
                         }
                         match self.write_recv.recv().await.unwrap() {
                             WriteRequest::Message(message) => outgoing = message,
+                            WriteRequest::IpmiSel(message) => {
+                                outgoing = message;
+                                outgoing_is_ipmi_sel = true;
+                            }
                             WriteRequest::Flush(send) => send.complete(()),
                         }
                     }
@@ -1311,11 +1331,18 @@ impl<T: RingMem> ProcessLoop<T> {
                 );
             }
             Msg::IpmiSel { record_id, record } => {
-                self.send_message(
-                    get_protocol::IpmiSelNotification::new(record_id, record)
-                        .as_bytes()
-                        .to_vec(),
-                );
+                // SEL forwarding is best-effort. Bound memory if the host stops
+                // draining the pipe by dropping notifications beyond the cap.
+                if self.ipmi_sel_pending < MAX_PENDING_IPMI_SEL {
+                    self.ipmi_sel_pending += 1;
+                    self.pipe_channels.message_send.send(WriteRequest::IpmiSel(
+                        get_protocol::IpmiSelNotification::new(record_id, record)
+                            .as_bytes()
+                            .to_vec(),
+                    ));
+                } else {
+                    self.ipmi_sel_dropped.increment();
+                }
             }
             Msg::ReportRestoreResultToHost(success) => self.report_restore_result_to_host(success),
             Msg::VtlCrashNotification(crash_notification) => {

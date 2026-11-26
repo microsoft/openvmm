@@ -40,8 +40,8 @@ compatibility but are not enforced because the device has one serialized KCS
 requestor and no independent SEL mutators.
 
 Completed SEL records are retained by the device and forwarded to the host on
-a best-effort basis. Forwarding is limited to 256 records per trusted
-wall-clock second; reaching that limit does not remove records from the SEL.
+a best-effort basis. Forwarding is rate-limited; records that are not forwarded
+remain in the SEL.
 
 ## Servicing
 
