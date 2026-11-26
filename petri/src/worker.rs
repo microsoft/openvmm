@@ -142,6 +142,17 @@ impl Worker {
         Ok(())
     }
 
+    pub(crate) async fn eject_pcie_device(
+        &self,
+        port_name: String,
+        timeout: std::time::Duration,
+    ) -> anyhow::Result<()> {
+        self.rpc
+            .call_failable(VmRpc::EjectPcieDevice, (port_name, timeout))
+            .await?;
+        Ok(())
+    }
+
     pub(crate) async fn add_vpci_device(
         &self,
         instance_id: guid::Guid,

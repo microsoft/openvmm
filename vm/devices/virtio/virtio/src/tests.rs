@@ -1475,6 +1475,69 @@ impl AsyncRun<TestDeviceQueue> for TestDeviceTask {
     }
 }
 
+#[async_test]
+async fn pci_pmem_requires_mapper_before_backend_resolution(driver: DefaultDriver) {
+    use crate::resolver::ResolveVirtioPciError;
+    use crate::resolver::VirtioPciResolver;
+    use pci_core::bus_range::AssignedBusRange;
+    use pci_core::dma::DmaTarget;
+    use pci_resources::ResolvePciDeviceHandleParams;
+    use virtio_resources::VirtioPciDeviceHandle;
+    use virtio_resources::pmem::VirtioPmemHandle;
+    use vm_resource::AsyncResolveResource;
+    use vm_resource::IntoResource;
+    use vm_resource::ResourceResolver;
+
+    let dma_target = DmaTarget::new(
+        AssignedBusRange::new(),
+        0,
+        GuestMemory::empty(),
+        &MsiConnection::new(),
+    );
+    let driver_source = VmTaskDriverSource::new(SingleDriverBackend::new(driver));
+    let result = VirtioPciResolver
+        .resolve(
+            &ResourceResolver::new(),
+            VirtioPciDeviceHandle(
+                VirtioPmemHandle {
+                    path: String::new(),
+                    read_only: false,
+                }
+                .into_resource(),
+            ),
+            ResolvePciDeviceHandleParams {
+                dma_target: &dma_target,
+                register_mmio: &mut ExternallyManagedMmioIntercepts,
+                driver_source: &driver_source,
+                doorbell_registration: None,
+                shared_mem_mapper: None,
+            },
+        )
+        .await;
+    assert!(matches!(
+        result,
+        Err(ResolveVirtioPciError::PmemRequiresMapper)
+    ));
+}
+
+#[async_test]
+async fn pci_shared_memory_without_mapper_returns_error(driver: DefaultDriver) {
+    let driver_source = VmTaskDriverSource::new(SingleDriverBackend::new(driver.clone()));
+    let msi = MsiConnection::new();
+    let mut traits = DeviceTraits::default();
+    traits.shared_memory.size = 0x1000;
+    let result = VirtioPciDevice::new(
+        Box::new(TestDevice::new(&driver_source, traits, None)),
+        &driver,
+        GuestMemory::empty(),
+        PciInterruptModel::Msix(&msi.target()),
+        None,
+        &mut ExternallyManagedMmioIntercepts,
+        None,
+    );
+    assert!(matches!(result, Err(error) if error.kind() == io::ErrorKind::Unsupported));
+}
+
 impl VirtioPciTestDevice {
     fn new(
         driver: &DefaultDriver,

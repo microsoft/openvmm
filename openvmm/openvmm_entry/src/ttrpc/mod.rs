@@ -1398,6 +1398,7 @@ impl VmService {
             ide_disks: vec![],
             floppy_disks: vec![],
             pcie_root_complexes: pcie.root_complexes,
+            pcie_acpi_hotplug_port: None,
             pcie_ecam_below_4gb: false,
             pcie_devices: pcie.devices,
             pcie_switches: pcie.switches,

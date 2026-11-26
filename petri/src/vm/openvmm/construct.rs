@@ -745,6 +745,7 @@ impl PetriVmConfigOpenVmm {
             floppy_disks: vec![],
             ide_disks,
             pcie_root_complexes: vec![],
+            pcie_acpi_hotplug_port: None,
             pcie_ecam_below_4gb: false,
             pcie_devices,
             pcie_switches: vec![],
