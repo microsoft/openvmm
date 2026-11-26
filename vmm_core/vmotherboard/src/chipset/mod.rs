@@ -1488,9 +1488,9 @@ pub(crate) mod tests {
             events
         };
 
-        fixture.units.start().await;
+        fixture.units.start().await.unwrap();
         assert_eq!(take_events(), ["omitted:start", "saved:start"]);
-        fixture.units.stop().await;
+        fixture.units.stop().await.unwrap();
         assert_eq!(take_events(), ["omitted:stop", "saved:stop"]);
 
         let saved = fixture.units.save().await.unwrap();
@@ -1501,7 +1501,7 @@ pub(crate) mod tests {
         fixture.units.reset().await.unwrap();
         assert_eq!(take_events(), ["omitted:reset", "saved:reset"]);
         fixture.units.restore(saved).await.unwrap();
-        fixture.units.start().await;
+        fixture.units.start().await.unwrap();
         assert_eq!(take_events(), ["omitted:start", "saved:start"]);
 
         let mut data = [0; 4];

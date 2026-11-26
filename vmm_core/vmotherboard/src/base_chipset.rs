@@ -1615,6 +1615,7 @@ mod tests {
                 time_source: rtc_time_source(),
                 century_reg_idx: 0x32,
                 initial_cmos: Some(initial_cmos()),
+                mode: dev::GenericCmosRtcMode::Standard,
             }),
             ..BaseChipsetDevices::empty()
         };
