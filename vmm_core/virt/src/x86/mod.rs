@@ -457,8 +457,8 @@ impl HardwareBreakpoint {
         let v = dr7 >> (16 + reg * 4);
         let ty = match v & 3 {
             0 => BreakpointType::Execute,
-            1 => BreakpointType::Invalid,
-            2 => BreakpointType::Write,
+            1 => BreakpointType::Write,
+            2 => BreakpointType::Invalid,
             3 => BreakpointType::ReadOrWrite,
             _ => unreachable!(),
         };
@@ -474,7 +474,13 @@ impl HardwareBreakpoint {
 
     /// Returns a value to OR into DR7 to enable this breakpoint.
     pub fn dr7_bits(&self, reg: usize) -> u64 {
-        ((self.ty as u64 | ((self.size as u64) << 2)) << (16 + reg * 4)) | (1 << (1 + reg * 2))
+        let ty = match self.ty {
+            BreakpointType::Execute => 0,
+            BreakpointType::Write => 1,
+            BreakpointType::Invalid => 2,
+            BreakpointType::ReadOrWrite => 3,
+        };
+        ((ty | ((self.size as u64) << 2)) << (16 + reg * 4)) | (1 << (1 + reg * 2))
     }
 }
 
@@ -1022,21 +1028,13 @@ pub(crate) mod tests {
         }
     }
 
-    // IGNORED: this test fails because of a known bug. BreakpointType::Write has
-    // value 2, so dr7_bits() programs the DR7 R/W field as 10b (an I/O breakpoint,
-    // undefined without CR4.DE) instead of 01b (break on data writes), and
-    // from_dr7() decodes a hardware 01b as Invalid. Write watchpoints from the gdb
-    // stub therefore do not trigger on KVM or OpenHCL. Re-enable this test together
-    // with the fix (swap the Write and Invalid/I/O values) by removing #[ignore].
-    //
     // Test: Encode every breakpoint type and size into DR7 for each debug
-    //       register.
-    // Expected: The bits match the Intel SDM DR7 layout: the register's
+    //       register and decode independently specified architectural bits.
+    // Expected: Encoding and decoding match the Intel SDM DR7 layout: the register's
     //       global-enable bit, R/W = 00b execute, 01b data write, 11b data
     //       read/write, and LEN = 00b 1 byte, 01b 2 bytes, 11b 4 bytes,
     //       10b 8 bytes.
     #[test]
-    #[ignore = "known bug: DR7 write breakpoints use the I/O encoding (see comment)"]
     fn hardware_breakpoint_dr7_bits_match_architectural_encoding() {
         for reg in 0..4 {
             for ty in BREAKPOINT_TYPES {
@@ -1061,8 +1059,29 @@ pub(crate) mod tests {
 
                     let expected = (1 << (1 + reg * 2)) | ((rw | (len << 2)) << (16 + reg * 4));
                     assert_eq!(bp.dr7_bits(reg), expected, "reg {reg}, {ty:?}, {size:?}");
+                    assert_eq!(
+                        HardwareBreakpoint::from_dr7(expected, bp.address, reg),
+                        bp,
+                        "reg {reg}, {ty:?}, {size:?}"
+                    );
                 }
             }
+        }
+    }
+
+    // Test: Decode the architectural I/O breakpoint encoding in each debug register.
+    // Expected: It remains unsupported rather than becoming a data-write breakpoint.
+    #[test]
+    fn hardware_breakpoint_io_encoding_is_invalid() {
+        for reg in 0..4 {
+            let bits = (1 << (1 + reg * 2)) | (0b10 << (16 + reg * 4));
+            let bp = HardwareBreakpoint {
+                address: 0x1234,
+                ty: BreakpointType::Invalid,
+                size: BreakpointSize::Byte,
+            };
+            assert_eq!(HardwareBreakpoint::from_dr7(bits, bp.address, reg), bp);
+            assert_eq!(bp.dr7_bits(reg), bits);
         }
     }
 
