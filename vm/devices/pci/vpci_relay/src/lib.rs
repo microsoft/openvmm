@@ -95,6 +95,8 @@ pub struct VpciRelayOptions {
     /// steps that need it, including the check for a VPCI protocol that carries
     /// TDISP.
     pub allow_unattested_devices: bool,
+    /// Keep the BARs of devices without TDISP attestation shared with the host.
+    pub allow_shared_bars: bool,
 }
 
 /// Virtual PCI relay.
@@ -119,6 +121,8 @@ pub struct VpciRelay {
     #[inspect(hex)]
     vtom: Option<u64>,
     isolation_type: IsolationType,
+    #[inspect(iter_by_index)]
+    vtl0_mmio: Vec<MemoryRange>,
     options: VpciRelayOptions,
     /// Base of the window the mocked TDISP flow programs into a device BAR,
     /// carved out of `mmio_range` and never handed to a device's config space.
@@ -240,7 +244,8 @@ impl AllowedDevice {
 }
 
 impl VpciRelay {
-    /// Creates a new VPCI relay.
+    /// Creates a new VPCI relay. `vtl0_mmio` is where the guest may place
+    /// device BARs.
     pub fn new(
         driver_source: VmTaskDriverSource,
         offers: vmbus_client::ConnectResult,
@@ -250,6 +255,7 @@ impl VpciRelay {
         mmio_access: Box<dyn CreateMemoryAccess>,
         isolation_type: IsolationType,
         vtom: Option<u64>,
+        vtl0_mmio: Vec<MemoryRange>,
         options: VpciRelayOptions,
     ) -> Self {
         // Setup test-specific values since TDISP tests don't necessarily take place inside a CVM runner.
@@ -296,6 +302,7 @@ impl VpciRelay {
             allowed_devices: Vec::new(),
             vtom: target_vtom,
             isolation_type: target_isolation_type,
+            vtl0_mmio,
             options,
             mock_bar_mmio,
         }
@@ -441,6 +448,7 @@ impl VpciRelay {
             self.isolation_type,
             self.vtom,
             instance_id,
+            &self.vtl0_mmio,
             self.options.test_tdisp_flow,
         )
         .context("failed to create a TDISP resource validator")?;
@@ -451,6 +459,7 @@ impl VpciRelay {
                 self.isolation_type,
                 hvdef::Vtl::Vtl0,
                 self.options.allow_unattested_devices,
+                self.options.allow_shared_bars,
             )
             .await
             .context("failed to initialize vpci device")?;

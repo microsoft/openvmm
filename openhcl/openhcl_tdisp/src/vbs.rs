@@ -7,8 +7,11 @@ use crate::TdispResourceValidationInterface;
 use crate::TdispTdiState;
 use anyhow::Context;
 use guid::Guid;
+use hcl::ioctl::AcceptPagesError;
 use hcl::ioctl::MshvHvcall;
 use hvdef::Vtl;
+use hvdef::hypercall::HostVisibilityType;
+use memory_range::MemoryRange;
 use std::future::Future;
 use std::pin::Pin;
 use tdisp::devicereport::TdiReportStruct;
@@ -19,22 +22,66 @@ use tdisp::devicereport::TdiReportStruct;
 /// partition until it's authorized through the vTSM (virtual TSM). Each
 /// validator is created for one device, so unblocking DMA authorizes that
 /// device, blocking DMA unauthorizes it, and the `device_id` arguments are
-/// unused. The other operations do nothing, as VBS has no other resources to
-/// validate.
+/// unused.
+///
+/// VTL0 also can't reach the device's BARs until VTL2 accepts them, each time
+/// the host maps them. Unblocking MMIO accepts a BAR private, and the shared
+/// BARs are accepted shared. Device MMIO can't be unaccepted, so blocking MMIO
+/// does nothing.
 pub struct TdispVbsResourceValidator {
     hvcall: MshvHvcall,
     logical_device_id: u64,
+    vtl0_mmio: Vec<MemoryRange>,
 }
 
 impl TdispVbsResourceValidator {
     /// Creates a validator for the device on the VPCI bus with `instance_id`.
-    pub fn new(instance_id: Guid) -> anyhow::Result<Self> {
+    /// The guest chooses the BAR addresses, so only BARs inside `vtl0_mmio`
+    /// are accepted.
+    pub fn new(instance_id: Guid, vtl0_mmio: Vec<MemoryRange>) -> anyhow::Result<Self> {
         let hvcall = MshvHvcall::new().context("failed to open mshv_hvcall device")?;
-        hvcall.set_allowed_hypercalls(&[hvdef::HypercallCode::HvCallVbsVmCallAuthorizeDeviceIo]);
+        hvcall.set_allowed_hypercalls(&[
+            hvdef::HypercallCode::HvCallVbsVmCallAuthorizeDeviceIo,
+            hvdef::HypercallCode::HvCallAcceptGpaPages,
+        ]);
         Ok(Self {
             hvcall,
             logical_device_id: logical_device_id(&instance_id),
+            vtl0_mmio,
         })
+    }
+
+    /// Accepts the BAR `bar_id` that the guest mapped at `base_gpa` with
+    /// `visibility`.
+    fn accept_bar(
+        &self,
+        bar_id: u16,
+        base_gpa: u64,
+        length_in_bytes: u64,
+        visibility: HostVisibilityType,
+    ) -> anyhow::Result<()> {
+        let inside = base_gpa.checked_add(length_in_bytes).is_some_and(|end| {
+            self.vtl0_mmio
+                .iter()
+                .any(|r| r.start() <= base_gpa && end <= r.end())
+        });
+        if !inside {
+            anyhow::bail!(
+                "BAR {bar_id} at {base_gpa:#x} with length {length_in_bytes:#x} is outside VTL0 MMIO"
+            );
+        }
+        let range = MemoryRange::bounding(base_gpa..base_gpa + length_in_bytes);
+        let skipped = accept_mapped_pages(&self.hvcall, range, visibility)
+            .with_context(|| format!("failed to accept BAR {bar_id} at {range}"))?;
+        let skipped = skipped.iter().map(|r| r.to_string()).collect::<Vec<_>>();
+        tracing::info!(
+            bar_id,
+            %range,
+            ?visibility,
+            skipped = %skipped.join(", "),
+            "accepted device BAR"
+        );
+        Ok(())
     }
 
     /// Authorizes the device's DMA, or unauthorizes it if `authorize` is false.
@@ -59,6 +106,43 @@ impl TdispVbsResourceValidator {
 /// `instance_id`. The guest's VPCI driver derives it the same way.
 fn logical_device_id(instance_id: &Guid) -> u64 {
     u64::from(instance_id.data2) << 16 | u64::from(instance_id.data3 & 0xfff8)
+}
+
+/// Accepts the pages of `range` that the host maps with `visibility`, and
+/// returns the ones it doesn't. The host emulates those, so they stay
+/// unaccepted: VTL0 accesses to them trap to VTL2, which forwards them to the
+/// host.
+fn accept_mapped_pages(
+    hvcall: &MshvHvcall,
+    range: MemoryRange,
+    visibility: HostVisibilityType,
+) -> Result<Vec<MemoryRange>, AcceptPagesError> {
+    let mut skipped = Vec::<MemoryRange>::new();
+    let mut start = range.start();
+    while start < range.end() {
+        match hvcall.accept_gpa_pages(
+            MemoryRange::new(start..range.end()),
+            hvdef::hypercall::AcceptMemoryType::ANY,
+            visibility,
+        ) {
+            Ok(()) => break,
+            Err(AcceptPagesError::Hypervisor {
+                range: chunk,
+                output,
+                hv_error,
+            }) if hv_error == hvdef::HvError::OperationDenied => {
+                let page = chunk.start() + output.elements_processed() as u64 * hvdef::HV_PAGE_SIZE;
+                let end = page + hvdef::HV_PAGE_SIZE;
+                match skipped.last_mut() {
+                    Some(last) if last.end() == page => *last = MemoryRange::new(last.start()..end),
+                    _ => skipped.push(MemoryRange::new(page..end)),
+                }
+                start = end;
+            }
+            Err(err) => return Err(err),
+        }
+    }
+    Ok(skipped)
 }
 
 impl TdispResourceValidationInterface for TdispVbsResourceValidator {
@@ -90,12 +174,34 @@ impl TdispResourceValidationInterface for TdispVbsResourceValidator {
         &'a self,
         _target_vtl: Vtl,
         _device_id: u16,
-        _base_gpa: u64,
+        base_gpa: u64,
         _base_offset: u32,
-        _length_in_bytes: u64,
-        _range_id: u16,
+        length_in_bytes: u64,
+        range_id: u16,
     ) -> Pin<Box<dyn Future<Output = anyhow::Result<()>> + Send + Sync + 'a>> {
-        Box::pin(async { Ok(()) })
+        Box::pin(async move {
+            self.accept_bar(
+                range_id,
+                base_gpa,
+                length_in_bytes,
+                HostVisibilityType::PRIVATE,
+            )
+        })
+    }
+
+    fn tdisp_accept_shared_mmio(
+        &self,
+        _target_vtl: Vtl,
+        base_gpa: u64,
+        length_in_bytes: u64,
+        range_id: u16,
+    ) -> anyhow::Result<()> {
+        self.accept_bar(
+            range_id,
+            base_gpa,
+            length_in_bytes,
+            HostVisibilityType::SHARED,
+        )
     }
 
     fn tdisp_unblock_dma(&self, _target_vtl: Vtl, _device_id: u16) -> anyhow::Result<()> {

@@ -266,6 +266,7 @@ async fn connect_relay_with(
             isolation_type,
             Vtl::Vtl0,
             allow_unattested_devices,
+            false,
         )
         .await
         .unwrap();

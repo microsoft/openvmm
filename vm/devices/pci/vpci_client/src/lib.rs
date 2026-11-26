@@ -350,6 +350,7 @@ impl VpciDeviceDescription {
         isolation_type: IsolationType,
         target_vtl: hvdef::Vtl,
         allow_unattested_devices: bool,
+        allow_shared_bars: bool,
     ) -> anyhow::Result<(VpciDevice, VpciDeviceEject)> {
         let requirements = self
             .req
@@ -381,6 +382,7 @@ impl VpciDeviceDescription {
             target_vtl,
             implemented_bars(&requirements.bars),
             allow_unattested_devices,
+            allow_shared_bars,
         );
 
         // After this, the device is considered initialized and the caller is
@@ -388,6 +390,20 @@ impl VpciDeviceDescription {
         let dev = InUseDevice { req, id };
 
         dev.req.call_failable(WorkerRequest::Init, id).await?;
+
+        // Without a TDI report, the MSI-X capability tells which BARs the host
+        // intercepts.
+        if allow_unattested_devices {
+            let bars = msix_bars(|offset| {
+                let mut value = 0;
+                let read = ByteEnabledDwordRead::with_all_bytes_enabled(&mut value);
+                config_space.lock().read(id, offset, read);
+                value
+            });
+            for bar_id in bars {
+                tdisp.mark_bar_intercepted(bar_id).await;
+            }
+        }
 
         let mut high64 = false;
         let mut bar_rao = [0; 6];
@@ -1416,6 +1432,41 @@ pub(crate) struct ActiveMmioBar {
     pub base_address: u64,
     /// The length of the range in bytes.
     pub length_bytes: u64,
+}
+
+/// The IDs of the BARs that hold the MSI-X table and pending bit array, found
+/// through the capability list that `read` returns config space dwords of. The
+/// host supplies config space, so the walk is bounded and skips bad entries.
+fn msix_bars(mut read: impl FnMut(u16) -> u32) -> Vec<u16> {
+    use pci_core::spec::caps::CapabilityId;
+    use pci_core::spec::caps::msix::MsixCapabilityHeader;
+
+    let status = read(HeaderType00::STATUS_COMMAND.0) >> 16;
+    if !pci_core::spec::cfg_space::Status::from(status as u16).capabilities_list() {
+        return Vec::new();
+    }
+    let mut next = read(HeaderType00::RESERVED_CAP_PTR.0) as u8;
+    // Capabilities follow the 64-byte header, so at most 48 fit.
+    for _ in 0..48 {
+        let offset = u16::from(next & !3);
+        if offset < 0x40 {
+            break;
+        }
+        let header = read(offset);
+        if CapabilityId(header as u8) == CapabilityId::MSIX {
+            let mut bars = [
+                MsixCapabilityHeader::OFFSET_TABLE,
+                MsixCapabilityHeader::OFFSET_PBA,
+            ]
+            .map(|reg| (read(offset + reg.0) & 7) as u16)
+            .to_vec();
+            bars.retain(|&bar| bar < 6);
+            bars.dedup();
+            return bars;
+        }
+        next = (header >> 8) as u8;
+    }
+    Vec::new()
 }
 
 /// Which BAR indices the device actually implements.
