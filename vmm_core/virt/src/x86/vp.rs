@@ -3024,6 +3024,7 @@ mod tests {
                     parameter: 0xdead_b000,
                 }),
                 pending_interruption: Some(PendingInterruption::Interrupt { vector: 0x30 }),
+                ..Default::default()
             },
             Activity {
                 mp_state: MpState::WaitForSipi,
@@ -3032,6 +3033,7 @@ mod tests {
                 interrupt_shadow: true,
                 pending_event: Some(PendingEvent::ExtInt { vector: 0x21 }),
                 pending_interruption: Some(PendingInterruption::Nmi),
+                ..Default::default()
             },
             Activity {
                 mp_state: MpState::Idle,
@@ -3047,6 +3049,7 @@ mod tests {
                     vector: 13,
                     error_code: Some(0),
                 }),
+                ..Default::default()
             },
             Activity {
                 mp_state: MpState::Running,
@@ -3058,6 +3061,7 @@ mod tests {
                     vector: 6,
                     error_code: None,
                 }),
+                ..Default::default()
             },
         ] {
             assert_eq!(round_trip(&activity), activity);
@@ -3090,26 +3094,11 @@ mod tests {
         assert_u64_state_round_trips::<SyntheticMsrs, 20>();
     }
 
-    // IGNORED: this test fails because of a known bug. VirtualMsrs::names() lists
-    // SysenterEsp before SysenterEip, but get_values()/set_values() use sysenter_eip
-    // before sysenter_esp, so backends that move this state by register name (KVM,
-    // mshv, WHP, OpenHCL non-isolated) store the hypervisor's SYSENTER_ESP in the
-    // sysenter_eip field and vice versa. Backends that build VirtualMsrs by field
-    // (OpenHCL TDX/SNP, KVM SNP) use the correct meaning.
-    //
-    // Fixing this is a trap: VirtualMsrs is saved by field, so state saved today by
-    // a name-based backend already has the two values swapped. Simply reordering
-    // names() or get/set would make state saved before the fix restore with EIP and
-    // ESP swapped, faulting 32-bit guests on their next SYSENTER. A fix needs
-    // saved-state compatibility handling (for example, swapping old saved values on
-    // restore). Re-enable this test (remove #[ignore]) together with that fix.
-    //
     // Test: Look up each virtual MSR by name, where a consistent swap of two
     //       fields between the names list and get/set would still round-trip.
     // Expected: Each named register reports its own field (for example,
     //       SysenterEip reports sysenter_eip).
     #[test]
-    #[ignore = "known bug: SysenterEip/SysenterEsp names are swapped (see comment)"]
     fn virtual_msrs_report_fields_under_their_names() {
         let msrs = VirtualMsrs {
             kernel_gs_base: 1,
@@ -3239,6 +3228,7 @@ mod tests {
             dr6_tsx_broken: false,
             nxe_forced_on: false,
             nested_virt: false,
+            ..crate::x86::tests::basic_caps()
         }
     }
 
@@ -3299,7 +3289,7 @@ mod tests {
 
         let xsave = Xsave::from_standard(&standard, &caps);
         let mut out = vec![0; standard.len()];
-        xsave.write_standard(&mut out, &caps);
+        xsave.write_standard(&mut out, &caps).unwrap();
 
         assert!(out == standard, "standard format did not round-trip");
         let compact = xsave.compact();
@@ -3342,7 +3332,7 @@ mod tests {
 
         let xsave = Xsave::from_standard(&standard, &caps);
         let mut out = vec![0; standard.len()];
-        xsave.write_standard(&mut out, &caps);
+        xsave.write_standard(&mut out, &caps).unwrap();
 
         let compact = xsave.compact();
         assert!(
@@ -3887,6 +3877,14 @@ mod tests {
             mtrrs set_mtrrs Mtrrs,
             pat set_pat Pat,
             virtual_msrs set_virtual_msrs VirtualMsrs,
+            spec_ctrl set_spec_ctrl SpecCtrl,
+            umwait_control set_umwait_control UmwaitControl,
+            debug_ctl set_debug_ctl DebugCtl,
+            misc_msrs set_misc_msrs MiscMsrs,
+            machine_check set_machine_check MachineCheck,
+            bndcfgs set_bndcfgs Bndcfgs,
+            svm_msrs set_svm_msrs SvmMsrs,
+            osvw set_osvw Osvw,
             tsc set_tsc Tsc,
             cet set_cet Cet,
             cet_ss set_cet_ss CetSs,

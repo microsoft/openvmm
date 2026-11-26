@@ -342,7 +342,10 @@ mod tests {
         let phase = |failing, op: fn(&mut FakeVm) -> Result<(), StateError<FakeError>>| {
             let mut vm = FakeVm::new(true, false, true);
             vm.failing = Some(failing);
-            op(&mut vm).unwrap_err().phase
+            match op(&mut vm).unwrap_err() {
+                StateError::Access { phase, .. } => phase,
+                err => panic!("expected an access failure, got {err}"),
+            }
         };
 
         assert_eq!(

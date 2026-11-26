@@ -1160,9 +1160,7 @@ pub(crate) mod tests {
         components: &[(u32, u32, bool)],
         xsave_len: u32,
     ) -> Result<X86PartitionCapabilities, X86PartitionCapabilitiesError> {
-        let topology = vm_topology::processor::TopologyBuilder::new_x86()
-            .build(1)
-            .unwrap();
+        let topology = TopologyBuilder::new_x86().build(1).unwrap();
         let x2apic = topology.apic_mode() != ApicMode::XApic;
         X86PartitionCapabilities::from_cpuid(
             &topology,
@@ -1363,9 +1361,7 @@ pub(crate) mod tests {
     /// the highest leaves `max_function` and `max_extended`, include the
     /// SPEC_CTRL state.
     fn has_spec_ctrl(max_function: u32, max_extended: u32, leaf7_edx: u32, ext8_ebx: u32) -> bool {
-        let topology = vm_topology::processor::TopologyBuilder::new_x86()
-            .build(1)
-            .unwrap();
+        let topology = TopologyBuilder::new_x86().build(1).unwrap();
         let x2apic = topology.apic_mode() != ApicMode::XApic;
         X86PartitionCapabilities::from_cpuid(
             &topology,
@@ -1400,9 +1396,9 @@ pub(crate) mod tests {
     // The time ABI's CPUID helpers exist only for x86-64 guests.
     #[cfg(guest_arch = "x86_64")]
     fn pinned_profile_capabilities() -> Vec<(&'static str, X86PartitionCapabilities)> {
-        let topology = vm_topology::processor::TopologyBuilder::new_x86()
+        let topology = TopologyBuilder::new_x86()
             .vps_per_socket(2)
-            .x2apic(vm_topology::processor::x86::X2ApicState::Supported)
+            .x2apic(X2ApicState::Supported)
             .build(2)
             .unwrap();
         cpu_profile::pinned_profiles()
@@ -1452,9 +1448,7 @@ pub(crate) mod tests {
     /// Returns the partition capabilities of a CPU whose highest basic leaf is
     /// `max_function` and whose `CPUID.(7,0):ECX` is `leaf7_ecx`.
     fn capabilities_with_leaf7_ecx(max_function: u32, leaf7_ecx: u32) -> X86PartitionCapabilities {
-        let topology = vm_topology::processor::TopologyBuilder::new_x86()
-            .build(1)
-            .unwrap();
+        let topology = TopologyBuilder::new_x86().build(1).unwrap();
         let x2apic = topology.apic_mode() != ApicMode::XApic;
         X86PartitionCapabilities::from_cpuid(
             &topology,
@@ -1504,9 +1498,7 @@ pub(crate) mod tests {
         assert!(!caps.machine_check);
         // KVM on an AMD host takes a guest's writes of VM_CR and VM_HSAVE_PA
         // whether or not its CPUID enumerates SVM.
-        let topology = vm_topology::processor::TopologyBuilder::new_x86()
-            .build(1)
-            .unwrap();
+        let topology = TopologyBuilder::new_x86().build(1).unwrap();
         let x2apic = topology.apic_mode() != ApicMode::XApic;
         let with_svm = X86PartitionCapabilities::from_cpuid(
             &topology,
@@ -1539,9 +1531,7 @@ pub(crate) mod tests {
     fn bndcfgs_state_needs_mpx_in_a_leaf_that_the_cpu_has() {
         const MPX: u32 = 1 << 14;
         let has_bndcfgs = |max_function, leaf7_ebx| {
-            let topology = vm_topology::processor::TopologyBuilder::new_x86()
-                .build(1)
-                .unwrap();
+            let topology = TopologyBuilder::new_x86().build(1).unwrap();
             let x2apic = topology.apic_mode() != ApicMode::XApic;
             X86PartitionCapabilities::from_cpuid(&topology, &mut |leaf, subleaf| match (
                 leaf, subleaf,
@@ -1588,9 +1578,7 @@ pub(crate) mod tests {
     fn osvw_state_needs_osvw_in_a_leaf_that_the_cpu_has() {
         const OSVW: u32 = 1 << 9;
         let has_osvw = |max_extended, ext1_ecx| {
-            let topology = vm_topology::processor::TopologyBuilder::new_x86()
-                .build(1)
-                .unwrap();
+            let topology = TopologyBuilder::new_x86().build(1).unwrap();
             let x2apic = topology.apic_mode() != ApicMode::XApic;
             X86PartitionCapabilities::from_cpuid(&topology, &mut |leaf, subleaf| match (
                 leaf, subleaf,
