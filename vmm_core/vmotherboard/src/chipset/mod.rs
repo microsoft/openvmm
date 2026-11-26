@@ -11,6 +11,7 @@ mod line_sets;
 pub use self::builder::ChipsetBuilder;
 pub use self::builder::ChipsetDevices;
 pub use self::builder::DynamicDeviceUnit;
+pub use self::builder::MmioRevoker;
 
 use self::io_ranges::IoRanges;
 use self::io_ranges::LookupResult;

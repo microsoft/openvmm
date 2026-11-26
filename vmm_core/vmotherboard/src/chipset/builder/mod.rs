@@ -8,6 +8,7 @@ mod errors;
 use self::errors::ChipsetBuilderError;
 use self::errors::ErrorListExt;
 use self::errors::FinalChipsetBuilderError;
+pub use self::revocable_mmio::MmioRevoker;
 use super::backing::arc_mutex::device::ArcMutexChipsetDeviceBuilder;
 use super::backing::arc_mutex::pci::BusResolverWeakMutexPci;
 use super::backing::arc_mutex::pci::BusResolverWeakMutexPcie;
@@ -46,6 +47,8 @@ use vmcore::line_interrupt::LineSetTarget;
 use vmcore::vm_task::VmTaskDriver;
 use vmcore::vm_task::VmTaskDriverSource;
 use vmcore::vmtime::VmTimeSource;
+
+mod revocable_mmio;
 
 /// A (type erased) bundle of state unit handles for added devices.
 pub struct ChipsetDevices {
@@ -93,12 +96,45 @@ impl ChipsetDevices {
         name: impl Into<Arc<str>>,
         f: impl AsyncFnOnce(&mut (dyn RegisterMmioIntercept + Send)) -> anyhow::Result<T>,
     ) -> anyhow::Result<(DynamicDeviceUnit, Arc<CloseableMutex<T>>)> {
-        let name = name.into();
+        let (unit, device, _) = self
+            .add_dyn_device_inner(driver_source, units, name.into(), false, f)
+            .await?;
+        Ok((unit, device))
+    }
+
+    /// Adds a dynamic device whose MMIO access can be revoked before teardown.
+    pub async fn add_dyn_device_with_revocable_mmio<T: VmmChipsetDevice>(
+        &self,
+        driver_source: &VmTaskDriverSource,
+        units: &StateUnits,
+        name: impl Into<Arc<str>>,
+        f: impl AsyncFnOnce(&mut (dyn RegisterMmioIntercept + Send)) -> anyhow::Result<T>,
+    ) -> anyhow::Result<(DynamicDeviceUnit, Arc<CloseableMutex<T>>, MmioRevoker)> {
+        let (unit, device, revoker) = self
+            .add_dyn_device_inner(driver_source, units, name.into(), true, f)
+            .await?;
+        Ok((unit, device, revoker.expect("requested revocable MMIO")))
+    }
+
+    async fn add_dyn_device_inner<T: VmmChipsetDevice>(
+        &self,
+        driver_source: &VmTaskDriverSource,
+        units: &StateUnits,
+        name: Arc<str>,
+        revocable: bool,
+        f: impl AsyncFnOnce(&mut (dyn RegisterMmioIntercept + Send)) -> anyhow::Result<T>,
+    ) -> anyhow::Result<(
+        DynamicDeviceUnit,
+        Arc<CloseableMutex<T>>,
+        Option<MmioRevoker>,
+    )> {
         let arc_builder = Arc::<CloseableMutex<T>>::new_cyclic_builder();
+        let target: Weak<CloseableMutex<dyn ChipsetDevice>> = arc_builder.weak();
+        let revoker = revocable.then(|| MmioRevoker::new(target.clone()));
         let device = f(
             &mut super::backing::arc_mutex::services::register_mmio_for_device(
                 name.clone(),
-                arc_builder.weak(),
+                revoker.as_ref().map_or(target, MmioRevoker::target),
                 self.mmio_ranges.clone(),
             ),
         )
@@ -111,7 +147,11 @@ impl ChipsetDevices {
             .spawn(driver.clone(), |recv| device_unit.run(recv))
             .context("name in use")?;
 
-        Ok((DynamicDeviceUnit::new(unit, driver, device.clone()), device))
+        Ok((
+            DynamicDeviceUnit::new(unit, driver, device.clone()),
+            device,
+            revoker,
+        ))
     }
 }
 
