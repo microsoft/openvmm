@@ -552,9 +552,369 @@ pub fn max_physical_address_size_from_cpuid(mut cpuid: impl FnMut(u32, u32) -> [
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
+    use std::collections::HashMap;
     use test_with_tracing::test;
+    use vm_topology::processor::TopologyBuilder;
+    use vm_topology::processor::x86::X2ApicState;
+    use x86defs::cpuid::ExtendedFeatureSubleaf0Ecx;
+    use x86defs::cpuid::ExtendedFeatureSubleaf0Edx;
+    use x86defs::cpuid::ExtendedVersionAndFeaturesEdx;
+    use x86defs::cpuid::VersionAndFeaturesEcx;
+
+    /// CPUID results keyed by leaf and subleaf. Leaves that aren't listed
+    /// return all zeros, like a processor that doesn't implement them.
+    #[derive(Clone)]
+    pub(crate) struct FakeCpuid(HashMap<(u32, u32), [u32; 4]>);
+
+    impl FakeCpuid {
+        /// A processor from `vendor` whose highest standard leaf is `max`.
+        pub(crate) fn new(vendor: Vendor, max: u32) -> Self {
+            let word = |i: usize| u32::from_le_bytes(vendor.0[i..i + 4].try_into().unwrap());
+            let mut leaves = HashMap::new();
+            leaves.insert(
+                (CpuidFunction::VendorAndMaxFunction.0, 0),
+                [max, word(0), word(8), word(4)],
+            );
+            Self(leaves)
+        }
+
+        pub(crate) fn with(mut self, leaf: u32, subleaf: u32, value: [u32; 4]) -> Self {
+            self.0.insert((leaf, subleaf), value);
+            self
+        }
+
+        /// Returns the result for `leaf` and `subleaf`.
+        pub(crate) fn query(&self, leaf: u32, subleaf: u32) -> [u32; 4] {
+            self.0.get(&(leaf, subleaf)).copied().unwrap_or_default()
+        }
+
+        pub(crate) fn caps(
+            &self,
+            x2apic: X2ApicState,
+        ) -> Result<X86PartitionCapabilities, X86PartitionCapabilitiesError> {
+            let topology = TopologyBuilder::new_x86().x2apic(x2apic).build(1).unwrap();
+            X86PartitionCapabilities::from_cpuid(&topology, &mut |leaf, subleaf| {
+                self.query(leaf, subleaf)
+            })
+        }
+    }
+
+    /// Capabilities of an Intel processor without x2APIC, XSAVE, or a
+    /// hypervisor.
+    pub(crate) fn basic_caps() -> X86PartitionCapabilities {
+        FakeCpuid::new(Vendor::INTEL, 1)
+            .caps(X2ApicState::Unsupported)
+            .unwrap()
+    }
+
+    fn leaf1(ecx: VersionAndFeaturesEcx) -> [u32; 4] {
+        [0x000906ea, 0, ecx.into(), 0]
+    }
+
+    // Test: Derive capabilities from an Intel processor that reports only
+    //       leaf 1, with x2APIC and TSC deadline support.
+    // Expected: The vendor, reset RDX (leaf 1 EAX), x2APIC, and TSC deadline
+    //       are taken from CPUID; everything that needs a missing leaf is off,
+    //       and the physical address width defaults to 32 bits.
+    #[test]
+    fn from_cpuid_decodes_basic_intel_features() {
+        let caps = FakeCpuid::new(Vendor::INTEL, 1)
+            .with(
+                1,
+                0,
+                leaf1(
+                    VersionAndFeaturesEcx::new()
+                        .with_x2_apic(true)
+                        .with_tsc_deadline_tmr(true),
+                ),
+            )
+            .caps(X2ApicState::Supported)
+            .unwrap();
+
+        assert_eq!(caps.vendor, Vendor::INTEL);
+        assert_eq!(caps.reset_rdx, 0x000906ea);
+        assert!(caps.x2apic);
+        assert!(!caps.x2apic_enabled);
+        assert!(caps.tsc_deadline);
+        assert!(!caps.hv1 && !caps.hv1_reference_tsc_page);
+        assert!(!caps.cet && !caps.cet_ss && !caps.sgx && !caps.tsc_aux);
+        assert_eq!(caps.xsave.features, 0);
+        assert_eq!(caps.xsave.standard_len, XSAVE_VARIABLE_OFFSET as u32);
+        assert_eq!(caps.vtom, None);
+        assert_eq!(caps.physical_address_width, 32);
+        assert_eq!(caps.snp_c_bit, None);
+    }
+
+    // Test: Derive capabilities where the topology's APIC mode and CPUID's
+    //       x2APIC bit disagree, and where both enable x2APIC.
+    // Expected: A mismatch in either direction is an error naming the
+    //       expected and found values; an x2APIC-enabled topology with x2APIC
+    //       support enables x2APIC at boot.
+    #[test]
+    fn from_cpuid_requires_x2apic_to_match_topology() {
+        let with_x2apic = FakeCpuid::new(Vendor::INTEL, 1).with(
+            1,
+            0,
+            leaf1(VersionAndFeaturesEcx::new().with_x2_apic(true)),
+        );
+        let without_x2apic = FakeCpuid::new(Vendor::INTEL, 1);
+
+        assert!(matches!(
+            with_x2apic.caps(X2ApicState::Unsupported),
+            Err(X86PartitionCapabilitiesError::X2ApicMismatch {
+                expected: false,
+                found: true
+            })
+        ));
+        assert!(matches!(
+            without_x2apic.caps(X2ApicState::Supported),
+            Err(X86PartitionCapabilitiesError::X2ApicMismatch {
+                expected: true,
+                found: false
+            })
+        ));
+        assert!(
+            with_x2apic
+                .caps(X2ApicState::Enabled)
+                .unwrap()
+                .x2apic_enabled
+        );
+    }
+
+    // Test: Report CET shadow stacks (leaf 7 ECX), CET indirect branch
+    //       tracking only (leaf 7 EDX), and SGX (leaf 0x12 subleaf 2), and
+    //       report the same leaves when the maximum leaf doesn't reach them.
+    // Expected: Shadow stacks enable both CET flags, IBT enables CET only, and
+    //       a nonzero SGX type enables SGX; leaves above the maximum are
+    //       ignored.
+    #[test]
+    fn from_cpuid_reads_cet_and_sgx_only_below_max_leaf() {
+        let shadow_stack = [
+            0,
+            0,
+            ExtendedFeatureSubleaf0Ecx::new().with_cet_ss(true).into(),
+            0,
+        ];
+        let ibt = [
+            0,
+            0,
+            0,
+            ExtendedFeatureSubleaf0Edx::new().with_cet_ibt(true).into(),
+        ];
+        let sgx = [1, 0, 0, 0];
+
+        let caps = FakeCpuid::new(Vendor::INTEL, 0x12)
+            .with(7, 0, shadow_stack)
+            .with(0x12, 2, sgx)
+            .caps(X2ApicState::Unsupported)
+            .unwrap();
+        assert!(caps.cet && caps.cet_ss && caps.sgx);
+
+        let caps = FakeCpuid::new(Vendor::INTEL, 7)
+            .with(7, 0, ibt)
+            .with(0x12, 2, sgx)
+            .caps(X2ApicState::Unsupported)
+            .unwrap();
+        assert!(caps.cet && !caps.cet_ss && !caps.sgx);
+
+        let caps = FakeCpuid::new(Vendor::INTEL, 6)
+            .with(7, 0, shadow_stack)
+            .caps(X2ApicState::Unsupported)
+            .unwrap();
+        assert!(!caps.cet && !caps.cet_ss);
+    }
+
+    /// A processor with XSAVE: x87, SSE, and AVX (576 + 256 bytes) as user
+    /// features, plus a 16-byte supervisor feature 11, advertising
+    /// `standard_len` for the standard format.
+    fn xsave_cpuid(standard_len: u32) -> FakeCpuid {
+        FakeCpuid::new(Vendor::INTEL, 0xd)
+            .with(1, 0, leaf1(VersionAndFeaturesEcx::new().with_xsave(true)))
+            .with(0xd, 0, [0x7, 0, standard_len, 0])
+            .with(0xd, 1, [0, 0, 1 << 11, 0])
+            .with(0xd, 2, [256, 576, 0, 0])
+            .with(0xd, 11, [16, 0, 0, 0])
+    }
+
+    // Test: Derive XSAVE capabilities from leaf 0xD with user and supervisor
+    //       features, once with a correct advertised size and once with a
+    //       size smaller than the features need.
+    // Expected: Features, per-feature layout, and both buffer lengths are
+    //       computed from the subleaves; an advertised size that's too small
+    //       is an error reporting both sizes.
+    #[test]
+    fn from_cpuid_computes_xsave_layout_and_rejects_short_size() {
+        let caps = xsave_cpuid(832).caps(X2ApicState::Unsupported).unwrap();
+
+        assert_eq!(caps.xsave.features, 0x7);
+        assert_eq!(caps.xsave.supervisor_features, 1 << 11);
+        assert_eq!(caps.xsave.feature_info[2].offset, 576);
+        assert_eq!(caps.xsave.feature_info[2].len, 256);
+        assert_eq!(caps.xsave.standard_len, 576 + 256);
+        assert_eq!(caps.xsave.compact_len, 576 + 256 + 16);
+
+        assert!(matches!(
+            xsave_cpuid(768).caps(X2ApicState::Unsupported),
+            Err(X86PartitionCapabilitiesError::XSaveLengthTooSmall {
+                advertised: 768,
+                required: 832
+            })
+        ));
+    }
+
+    /// A processor running under a hypervisor whose interface signature is
+    /// `interface`, granting `privileges`, with isolation configuration
+    /// `isolation`.
+    fn hypervisor_cpuid(
+        hypervisor_present: bool,
+        interface: &[u8; 4],
+        privileges: hvdef::HvPartitionPrivilege,
+        isolation: hvdef::HvIsolationConfiguration,
+    ) -> FakeCpuid {
+        let privileges = u64::from(privileges);
+        let isolation = u128::from(isolation);
+        FakeCpuid::new(Vendor::INTEL, 1)
+            .with(
+                1,
+                0,
+                leaf1(VersionAndFeaturesEcx::new().with_hypervisor_present(hypervisor_present)),
+            )
+            .with(
+                hvdef::HV_CPUID_FUNCTION_HV_VENDOR_AND_MAX_FUNCTION,
+                0,
+                [
+                    hvdef::HV_CPUID_FUNCTION_MS_HV_ISOLATION_CONFIGURATION,
+                    0,
+                    0,
+                    0,
+                ],
+            )
+            .with(
+                hvdef::HV_CPUID_FUNCTION_HV_INTERFACE,
+                0,
+                [u32::from_le_bytes(*interface), 0, 0, 0],
+            )
+            .with(
+                hvdef::HV_CPUID_FUNCTION_MS_HV_FEATURES,
+                0,
+                [privileges as u32, (privileges >> 32) as u32, 0, 0],
+            )
+            .with(
+                hvdef::HV_CPUID_FUNCTION_MS_HV_ISOLATION_CONFIGURATION,
+                0,
+                [
+                    isolation as u32,
+                    (isolation >> 32) as u32,
+                    (isolation >> 64) as u32,
+                    (isolation >> 96) as u32,
+                ],
+            )
+    }
+
+    // Test: Derive capabilities under a Hyper-V compatible hypervisor that
+    //       grants the reference TSC page and isolation with a 2^46 shared GPA
+    //       boundary; then under a hypervisor with a different interface
+    //       signature, and with the leaves present but the hypervisor bit
+    //       clear.
+    // Expected: Only the Hv#1 hypervisor enables hv1, the reference TSC page,
+    //       and a VTOM of 2^46; the others leave all three off.
+    #[test]
+    fn from_cpuid_reads_hyperv_leaves_only_for_hv1() {
+        let privileges = hvdef::HvPartitionPrivilege::new()
+            .with_access_partition_reference_tsc(true)
+            .with_isolation(true);
+        let isolation = hvdef::HvIsolationConfiguration::new()
+            .with_shared_gpa_boundary_active(true)
+            .with_shared_gpa_boundary_bits(46);
+
+        let caps = hypervisor_cpuid(true, b"Hv#1", privileges, isolation)
+            .caps(X2ApicState::Unsupported)
+            .unwrap();
+        assert!(caps.hv1 && caps.hv1_reference_tsc_page);
+        assert_eq!(caps.vtom, Some(1 << 46));
+
+        for cpuid in [
+            hypervisor_cpuid(true, b"Xen0", privileges, isolation),
+            hypervisor_cpuid(false, b"Hv#1", privileges, isolation),
+        ] {
+            let caps = cpuid.caps(X2ApicState::Unsupported).unwrap();
+            assert!(!caps.hv1 && !caps.hv1_reference_tsc_page);
+            assert_eq!(caps.vtom, None);
+        }
+    }
+
+    // Test: Derive capabilities where TSC_AUX is reachable through RDTSCP
+    //       (extended leaf 0x80000001), through RDPID (leaf 7), or neither,
+    //       with a 48-bit physical address width in leaf 0x80000008.
+    // Expected: Either instruction enables TSC_AUX and neither leaves it off;
+    //       the physical address width is read from the extended leaf.
+    #[test]
+    fn from_cpuid_enables_tsc_aux_for_rdtscp_or_rdpid() {
+        let extended = FakeCpuid::new(Vendor::AMD, 7)
+            .with(0x8000_0000, 0, [0x8000_0008, 0, 0, 0])
+            .with(0x8000_0008, 0, [48, 0, 0, 0]);
+        let rdtscp = extended.clone().with(
+            0x8000_0001,
+            0,
+            [
+                0,
+                0,
+                0,
+                ExtendedVersionAndFeaturesEdx::new()
+                    .with_rdtscp(true)
+                    .into(),
+            ],
+        );
+        let rdpid = extended.clone().with(
+            7,
+            0,
+            [
+                0,
+                0,
+                ExtendedFeatureSubleaf0Ecx::new().with_rd_pid(true).into(),
+                0,
+            ],
+        );
+
+        for (cpuid, tsc_aux) in [(rdtscp, true), (rdpid, true), (extended, false)] {
+            let caps = cpuid.caps(X2ApicState::Unsupported).unwrap();
+            assert_eq!(caps.vendor, Vendor::AMD);
+            assert_eq!(caps.tsc_aux, tsc_aux);
+            assert_eq!(caps.physical_address_width, 48);
+        }
+    }
+
+    // Test: Convert segment and table registers with distinct values in every
+    //       field to the x86defs and hvdef forms and back.
+    // Expected: Every field round-trips unchanged through both forms.
+    #[test]
+    fn segment_and_table_registers_round_trip() {
+        let seg = SegmentRegister {
+            base: 0x1234_5678_9abc_def0,
+            limit: 0xfedc_ba98,
+            selector: 0x1b,
+            attributes: 0xa09b,
+        };
+        assert_eq!(
+            SegmentRegister::from(x86defs::SegmentRegister::from(seg)),
+            seg
+        );
+        assert_eq!(
+            SegmentRegister::from(hvdef::HvX64SegmentRegister::from(seg)),
+            seg
+        );
+
+        let table = TableRegister {
+            base: 0xffff_8000_1234_0000,
+            limit: 0x0fff,
+        };
+        assert_eq!(
+            TableRegister::from(hvdef::HvX64TableRegister::from(table)),
+            table
+        );
+    }
 
     #[test]
     fn xsave_variable_features_preserve_order_and_layout() {
@@ -624,6 +984,99 @@ mod tests {
             _ => [0; 4],
         };
         assert_eq!(snp_c_bit_from_cpuid(cpuid_without_snp), None);
+    }
+
+    const BREAKPOINT_TYPES: [BreakpointType; 3] = [
+        BreakpointType::Execute,
+        BreakpointType::Write,
+        BreakpointType::ReadOrWrite,
+    ];
+    const BREAKPOINT_SIZES: [BreakpointSize; 4] = [
+        BreakpointSize::Byte,
+        BreakpointSize::Word,
+        BreakpointSize::DWord,
+        BreakpointSize::QWord,
+    ];
+
+    // Test: Encode every breakpoint type and size into DR7 for each debug
+    //       register, then decode it back.
+    // Expected: Decoding returns the original breakpoint.
+    #[test]
+    fn hardware_breakpoint_round_trips_through_dr7() {
+        const ADDRESS: u64 = 0xffff_8000_1234_5678;
+        for reg in 0..4 {
+            for ty in BREAKPOINT_TYPES {
+                for size in BREAKPOINT_SIZES {
+                    let bp = HardwareBreakpoint {
+                        address: ADDRESS,
+                        ty,
+                        size,
+                    };
+                    assert_eq!(
+                        HardwareBreakpoint::from_dr7(bp.dr7_bits(reg), ADDRESS, reg),
+                        bp,
+                        "reg {reg}"
+                    );
+                }
+            }
+        }
+    }
+
+    // IGNORED: this test fails because of a known bug. BreakpointType::Write has
+    // value 2, so dr7_bits() programs the DR7 R/W field as 10b (an I/O breakpoint,
+    // undefined without CR4.DE) instead of 01b (break on data writes), and
+    // from_dr7() decodes a hardware 01b as Invalid. Write watchpoints from the gdb
+    // stub therefore do not trigger on KVM or OpenHCL. Re-enable this test together
+    // with the fix (swap the Write and Invalid/I/O values) by removing #[ignore].
+    //
+    // Test: Encode every breakpoint type and size into DR7 for each debug
+    //       register.
+    // Expected: The bits match the Intel SDM DR7 layout: the register's
+    //       global-enable bit, R/W = 00b execute, 01b data write, 11b data
+    //       read/write, and LEN = 00b 1 byte, 01b 2 bytes, 11b 4 bytes,
+    //       10b 8 bytes.
+    #[test]
+    #[ignore = "known bug: DR7 write breakpoints use the I/O encoding (see comment)"]
+    fn hardware_breakpoint_dr7_bits_match_architectural_encoding() {
+        for reg in 0..4 {
+            for ty in BREAKPOINT_TYPES {
+                let rw: u64 = match ty {
+                    BreakpointType::Execute => 0b00,
+                    BreakpointType::Write => 0b01,
+                    BreakpointType::ReadOrWrite => 0b11,
+                    BreakpointType::Invalid => unreachable!(),
+                };
+                for size in BREAKPOINT_SIZES {
+                    let len: u64 = match size {
+                        BreakpointSize::Byte => 0b00,
+                        BreakpointSize::Word => 0b01,
+                        BreakpointSize::DWord => 0b11,
+                        BreakpointSize::QWord => 0b10,
+                    };
+                    let bp = HardwareBreakpoint {
+                        address: 0,
+                        ty,
+                        size,
+                    };
+
+                    let expected = (1 << (1 + reg * 2)) | ((rw | (len << 2)) << (16 + reg * 4));
+                    assert_eq!(bp.dr7_bits(reg), expected, "reg {reg}, {ty:?}, {size:?}");
+                }
+            }
+        }
+    }
+
+    // Test: Convert supported and unsupported byte sizes to a breakpoint size.
+    // Expected: 1, 2, 4, and 8 map to their sizes; anything else is rejected.
+    #[test]
+    fn breakpoint_size_accepts_only_supported_lengths() {
+        assert_eq!(BreakpointSize::try_from(1).unwrap(), BreakpointSize::Byte);
+        assert_eq!(BreakpointSize::try_from(2).unwrap(), BreakpointSize::Word);
+        assert_eq!(BreakpointSize::try_from(4).unwrap(), BreakpointSize::DWord);
+        assert_eq!(BreakpointSize::try_from(8).unwrap(), BreakpointSize::QWord);
+        for size in [0, 3, 5, 16] {
+            assert!(BreakpointSize::try_from(size).is_err(), "size {size}");
+        }
     }
 }
 

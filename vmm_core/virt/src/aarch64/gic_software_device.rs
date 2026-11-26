@@ -71,3 +71,70 @@ impl SignalMsi for GicSoftwareDevice {
         }
     }
 }
+
+#[cfg(test)]
+pub(crate) mod tests {
+    use super::*;
+    use pal_async::async_test;
+    use parking_lot::Mutex;
+    use test_with_tracing::test;
+    use vmcore::vpci_msi::VpciInterruptParameters;
+
+    /// Records every SPI assertion.
+    #[derive(Default)]
+    pub(crate) struct RecordGic(pub Mutex<Vec<(u32, bool)>>);
+
+    impl ControlGic for RecordGic {
+        fn set_spi_irq(&self, irq_id: u32, high: bool) {
+            self.0.lock().push((irq_id, high));
+        }
+    }
+
+    fn params(vector: u32) -> VpciInterruptParameters<'static> {
+        VpciInterruptParameters {
+            vector,
+            multicast: false,
+            target_processors: &[0],
+        }
+    }
+
+    // Test: Register interrupt blocks that fit in the SPI range (IDs
+    //       32-1019), blocks whose size isn't a power of two, and blocks that
+    //       start below or run past the SPI range.
+    // Expected: A valid block returns its first SPI as the MSI data; the
+    //       others are rejected.
+    #[async_test]
+    async fn registration_requires_power_of_two_block_of_spis() {
+        let device = GicSoftwareDevice::new(Arc::new(RecordGic::default()));
+
+        let ok = device.register_interrupt(4, &params(64)).await.unwrap();
+        assert_eq!((ok.address, ok.data), (0, 64));
+        assert!(device.register_interrupt(1, &params(1019)).await.is_ok());
+
+        for (count, vector) in [(0, 64), (3, 64), (1, 31), (2, 1019), (1, u32::MAX)] {
+            assert!(
+                device
+                    .register_interrupt(count, &params(vector))
+                    .await
+                    .is_err(),
+                "{count} vectors at {vector}"
+            );
+        }
+        device.unregister_interrupt(0, 64).await;
+    }
+
+    // Test: Signal MSIs whose data is an SPI, a PPI (below 32), and an ID
+    //       past the SPI range.
+    // Expected: Only the SPI is asserted on the GIC.
+    #[test]
+    fn signal_asserts_only_spis() {
+        let gic = Arc::new(RecordGic::default());
+        let device = GicSoftwareDevice::new(gic.clone());
+
+        for data in [64, 31, 1020] {
+            device.signal_msi(None, 0, data);
+        }
+
+        assert_eq!(*gic.0.lock(), [(64, true)]);
+    }
+}

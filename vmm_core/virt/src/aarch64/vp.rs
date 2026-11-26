@@ -425,3 +425,134 @@ state_trait! {
     (1, "registers", registers, set_registers, Registers),
     (2, "system_registers", system_registers, set_system_registers, SystemRegisters),
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::aarch64::Aarch64InitialRegs;
+    use aarch64defs::MpidrEl1;
+    use test_with_tracing::test;
+    use vm_topology::processor::VpIndex;
+    use vm_topology::processor::VpInfo;
+
+    fn caps(isolation: IsolationType, supports_aarch32_el0: bool) -> Aarch64PartitionCapabilities {
+        Aarch64PartitionCapabilities {
+            isolation,
+            supports_aarch32_el0,
+            vendor: aarch64defs::Vendor::ARM,
+        }
+    }
+
+    fn bsp() -> Aarch64VpInfo {
+        Aarch64VpInfo {
+            base: VpInfo {
+                vp_index: VpIndex::BSP,
+                vnode: 0,
+            },
+            mpidr: MpidrEl1::new(),
+            gicr: None,
+            pmu_gsiv: None,
+        }
+    }
+
+    fn values_of<T: HvRegisterState<HvArm64RegisterName, N>, const N: usize>(
+        state: &T,
+    ) -> [u64; N] {
+        let mut values = [HvRegisterValue::from(0u64); N];
+        state.get_values(values.iter_mut());
+        values.map(|v| v.as_u64())
+    }
+
+    // Test: Write a distinct value to every general-purpose register through
+    //       the register interface and read them back, checking the special
+    //       registers by name.
+    // Expected: Every value reads back unchanged, and FP, LR, SP_EL0, SP_EL1,
+    //       PC, and CPSR land in their named fields.
+    #[test]
+    fn registers_round_trip_in_named_order() {
+        let values: [u64; 35] = std::array::from_fn(|i| 0x1000 + i as u64);
+        let mut regs = Registers::default();
+        regs.set_values(values.map(HvRegisterValue::from).into_iter());
+
+        assert_eq!(values_of(&regs), values);
+        assert_eq!((regs.x0, regs.x28), (0x1000, 0x1000 + 28));
+        assert_eq!((regs.fp, regs.lr), (0x1000 + 29, 0x1000 + 30));
+        assert_eq!((regs.sp_el0, regs.sp_el1), (0x1000 + 31, 0x1000 + 32));
+        assert_eq!((regs.pc, regs.cpsr), (0x1000 + 33, 0x1000 + 34));
+        let names = regs.names();
+        assert_eq!(names[29], HvArm64RegisterName::XFp);
+        assert_eq!(names[32], HvArm64RegisterName::XSpElx);
+        assert_eq!(names[34], HvArm64RegisterName::Cpsr);
+    }
+
+    // Test: Write a distinct value to every EL1 system register through the
+    //       register interface and read them back.
+    // Expected: Every value reads back unchanged in the order of names(), and
+    //       each named register holds its own field.
+    #[test]
+    fn system_registers_round_trip_in_named_order() {
+        let values: [u64; 9] = std::array::from_fn(|i| 0x2000 + i as u64);
+        let mut regs = SystemRegisters::default();
+        regs.set_values(values.map(HvRegisterValue::from).into_iter());
+
+        assert_eq!(values_of(&regs), values);
+        assert_eq!(
+            regs,
+            SystemRegisters {
+                sctlr_el1: 0x2000,
+                ttbr0_el1: 0x2001,
+                ttbr1_el1: 0x2002,
+                tcr_el1: 0x2003,
+                esr_el1: 0x2004,
+                far_el1: 0x2005,
+                mair_el1: 0x2006,
+                elr_el1: 0x2007,
+                vbar_el1: 0x2008,
+            }
+        );
+        assert_eq!(regs.names()[8], HvArm64RegisterName::VbarEl1);
+    }
+
+    // Test: Compute the boot register state for the BSP.
+    // Expected: Every general-purpose register, stack pointer, and PC is zero,
+    //       and CPSR is EL1 using SP_EL1 with D, A, I, and F masked (0x3c5).
+    #[test]
+    fn registers_reset_to_el1h_with_interrupts_masked() {
+        let regs = Registers::at_reset(&caps(IsolationType::None, false), &bsp());
+
+        assert_eq!(
+            regs,
+            Registers {
+                cpsr: 0x3c5,
+                ..Default::default()
+            }
+        );
+    }
+
+    // Test: Compute the reset SCTLR_EL1 for a non-isolated processor without
+    //       and with AArch32 EL0 support, and for a CCA realm.
+    // Expected: Non-isolated sets EOS, TSCXT, EIS, SPAN, nTLSMD, and LSMAOE,
+    //       plus ITD and SED (RES1) only without AArch32; CCA sets SA, SA0,
+    //       CP15BEN, nAA, EOS, nTWI, nTWE, EIS, and SPAN. Every other system
+    //       register is zero.
+    #[test]
+    fn system_registers_reset_by_isolation_and_aarch32() {
+        let reset =
+            |isolation, aarch32| SystemRegisters::at_reset(&caps(isolation, aarch32), &bsp());
+
+        assert_eq!(reset(IsolationType::None, false).sctlr_el1, 0x30d0_0980);
+        assert_eq!(reset(IsolationType::None, true).sctlr_el1, 0x30d0_0800);
+        assert_eq!(reset(IsolationType::Cca, false).sctlr_el1, 0x00c5_0878);
+        assert_eq!(
+            reset(IsolationType::None, false),
+            SystemRegisters {
+                sctlr_el1: 0x30d0_0980,
+                ..Default::default()
+            }
+        );
+
+        let initial = Aarch64InitialRegs::at_reset(&caps(IsolationType::None, true), &bsp());
+        assert_eq!(initial.registers.cpsr, 0x3c5);
+        assert_eq!(initial.system_registers.sctlr_el1, 0x30d0_0800);
+    }
+}
