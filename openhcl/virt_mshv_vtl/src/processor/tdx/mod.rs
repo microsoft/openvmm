@@ -3254,6 +3254,20 @@ impl TdxSegmentReg {
     }
 }
 
+fn decode_table_register(buf: &[u8]) -> TableRegister {
+    let base_bytes = match buf.len() {
+        6 | 10 => &buf[2..],
+        len => panic!("invalid descriptor length {len}"),
+    };
+    // Zero-padding the little-endian base zero-extends a legacy 32-bit base.
+    let mut base = [0u8; 8];
+    base[..base_bytes.len()].copy_from_slice(base_bytes);
+    TableRegister {
+        limit: u16::from_le_bytes([buf[0], buf[1]]),
+        base: u64::from_le_bytes(base),
+    }
+}
+
 #[derive(Debug)]
 enum TdxTableReg {
     Idtr,
@@ -3456,10 +3470,7 @@ impl UhProcessor<'_, TdxBacked> {
                     EmulatedMemoryOperation::Read(&mut buf[..len]),
                 )
                 .await?;
-                let table = TableRegister {
-                    limit: u16::from_le_bytes(buf[..2].try_into().unwrap()),
-                    base: u64::from_le_bytes(buf[2..len].try_into().unwrap()),
-                };
+                let table = decode_table_register(&buf[..len]);
                 self.write_table_register(
                     vtl,
                     if matches!(instr_info.instruction(), GdtrOrIdtrInstruction::Lidt) {
@@ -4613,6 +4624,36 @@ impl TlbFlushLockAccess for TdxTlbLockFlushAccess<'_> {
             }
             .set_wait_for_tlb_locks(vtl);
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::decode_table_register;
+    use test_with_tracing::test;
+
+    // Test: Decode a valid six-byte descriptor used by legacy LGDT/LIDT.
+    // Expected: Return its limit and zero-extended 32-bit base without panicking.
+    #[test]
+    fn legacy_descriptor_load_decodes_limit_and_base() {
+        let descriptor = [0x3f, 0x00, 0x78, 0x56, 0x34, 0x12];
+
+        let table = decode_table_register(&descriptor);
+
+        assert_eq!(table.limit, 0x003f);
+        assert_eq!(table.base, 0x0000_0000_1234_5678);
+    }
+
+    // Test: Decode a valid ten-byte descriptor used by long-mode LGDT/LIDT.
+    // Expected: Return its limit and preserve all 64 bits of its base.
+    #[test]
+    fn long_mode_descriptor_load_decodes_limit_and_base() {
+        let descriptor = [0xff, 0x01, 0xef, 0xcd, 0xab, 0x89, 0x67, 0x45, 0x23, 0x01];
+
+        let table = decode_table_register(&descriptor);
+
+        assert_eq!(table.limit, 0x01ff);
+        assert_eq!(table.base, 0x0123_4567_89ab_cdef);
     }
 }
 
