@@ -7,8 +7,9 @@ edition.workspace = true
 rust-version.workspace = true
 
 [dependencies]
-vm_resource.workspace = true
+ipmi_protocol.workspace = true
 local_clock.workspace = true
+vm_resource.workspace = true
 
 inspect.workspace = true
 memory_range.workspace = true

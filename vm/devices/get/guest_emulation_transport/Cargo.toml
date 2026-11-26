@@ -27,6 +27,7 @@ chipset_resources.workspace = true
 guid = { workspace = true, features = ["inspect"] }
 inspect.workspace = true
 inspect_counters.workspace = true
+ipmi_protocol.workspace = true
 mesh.workspace = true
 pal_async.workspace = true
 tracing_helpers.workspace = true
