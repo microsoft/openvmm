@@ -4,8 +4,20 @@
 // UNSAFETY: Declaring unsafe trait functions for manual memory management.
 #![expect(unsafe_code)]
 
+use memory_range::MemoryRange;
+
 /// Trait for mapping process memory into a partition.
 pub trait PartitionMemoryMap: Send + Sync {
+    /// Validates device-backed memory before changing partition mappings.
+    ///
+    /// Call before enabling a device region, including one that overlays RAM,
+    /// and before attaching a partition to existing device regions. Rejection
+    /// must precede unmapping an overlap, mapping, or pinning the device memory.
+    /// Validation depends on fixed partition configuration, not mapping state.
+    fn validate_device_memory_mapping(&self, _range: MemoryRange) -> anyhow::Result<()> {
+        Ok(())
+    }
+
     /// Unmaps any ranges in the given guest physical address range.
     ///
     /// The specified range may overlap zero, one, or many ranges mapped with
@@ -70,8 +82,11 @@ pub trait PartitionMemoryMap: Send + Sync {
 pub trait PartitionHostAccess: Send + Sync {
     /// Acquires host access without changing guest visibility.
     ///
-    /// TODO: This trait is sufficient for MSHV bring-up, but a redesign is
-    /// required to safely lower host access and track that pages are not
-    /// currently in use before revoking access.
+    /// Called on a contained mapping fault. Confirmed grants remain until a
+    /// guest attribute conflict requires their release.
+    /// Repeated acquisition and read-to-write upgrades must be supported.
+    ///
+    /// An error does not promise that no page in the range was granted.
+    /// The backend owns permission-state recovery and backing lifetime on failure.
     fn acquire_host_access(&self, addr: u64, size: u64, write: bool) -> anyhow::Result<()>;
 }

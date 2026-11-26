@@ -26,6 +26,7 @@ pub mod capabilities {
         NESTED_VIRT,
         NESTED_RESET,
         "test_disk",
+        "loop_device",
         "edu_initiator",
         "ivshmem_target",
     ];

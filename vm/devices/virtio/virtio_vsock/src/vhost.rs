@@ -799,6 +799,14 @@ mod tests {
             self.size
         }
 
+        fn supports_kernel_lock(&self) -> bool {
+            false
+        }
+
+        fn supports_user_lock(&self) -> bool {
+            false
+        }
+
         fn sharing(&self) -> Option<GuestMemorySharing> {
             Some(GuestMemorySharing::new(TestRegionProvider {
                 file: self.file.clone(),
@@ -855,6 +863,17 @@ mod tests {
                 avail_index: 0x8007,
                 used_index: 0x8005,
             }
+        );
+    }
+
+    #[async_test]
+    async fn rejects_unshared_guest_memory_export() {
+        let guest_memory = GuestMemory::allocate(SparseMapping::page_size());
+        let error = VhostMemory::new(&guest_memory).await.err().unwrap();
+        assert!(
+            error
+                .to_string()
+                .contains("requires shared file-backed guest memory")
         );
     }
 

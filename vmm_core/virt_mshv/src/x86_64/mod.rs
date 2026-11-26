@@ -75,7 +75,6 @@ pub(super) use snp::SnpError;
 pub(crate) use snp::SnpLaunchState;
 pub(crate) use snp::SnpPartitionState;
 pub(crate) use snp::SnpVpState;
-pub(crate) use snp::acquire_snp_host_access;
 use snp::prepare_snp_config;
 use snp::snp_cpuid_overrides;
 use snp::snp_hv_cpuid_overrides;
@@ -485,10 +484,18 @@ impl ProtoPartition for MshvProtoPartition<'_> {
         self.max_physical_address_size()
     }
 
+    fn supports_guest_memory_locking(&self) -> bool {
+        matches!(self.isolation, MshvProtoPartitionIsolation::None)
+    }
+
     fn build(
         self,
         config: PartitionConfig<'_>,
     ) -> Result<(Self::Partition, Vec<Self::ProcessorBinder>), Self::Error> {
+        validate_guest_memory_locking(
+            self.supports_guest_memory_locking(),
+            config.guest_memory,
+        )?;
         let snp_config = match &self.isolation {
             MshvProtoPartitionIsolation::None => None,
             MshvProtoPartitionIsolation::Snp { config, .. } => config.as_deref(),
@@ -656,6 +663,21 @@ impl ProtoPartition for MshvProtoPartition<'_> {
 
         Ok((partition, vps))
     }
+}
+
+fn validate_guest_memory_locking(
+    supports_locking: bool,
+    guest_memory: &GuestMemory,
+) -> Result<(), Error> {
+    if !supports_locking
+        && (guest_memory.supports_kernel_lock() || guest_memory.supports_user_lock())
+    {
+        return Err(ErrorInner::InvalidConfiguration(
+            "MSHV requires non-lockable guest memory for this mode",
+        )
+        .into());
+    }
+    Ok(())
 }
 
 impl virt::Partition for MshvPartition {
@@ -1686,6 +1708,72 @@ fn supported_xsave_features() -> hvdef::HvX64PartitionProcessorXsaveFeatures {
 mod tests {
     use super::*;
     use test_with_tracing::test;
+
+    #[test]
+    fn snp_rejects_device_backing_at_any_guest_address() {
+        let snp = MshvIsolationState::Snp(SnpPartitionState::new(false));
+        for range in [
+            MemoryRange::new(0..hvdef::HV_PAGE_SIZE),
+            MemoryRange::new(0x1_0000_0000..0x1_0000_0000 + hvdef::HV_PAGE_SIZE),
+        ] {
+            let error = snp.validate_device_memory_mapping(range).unwrap_err();
+            assert!(matches!(error.0, ErrorInner::InvalidConfiguration(_)));
+            MshvIsolationState::None
+                .validate_device_memory_mapping(range)
+                .unwrap();
+        }
+    }
+
+    #[test]
+    fn non_lockable_mode_rejects_either_locking_capability() {
+        struct Backing {
+            memory: guestmem::AlignedHeapMemory,
+            kernel_lockable: bool,
+            user_lockable: bool,
+        }
+
+        // SAFETY: the owned allocation keeps the mapping alive and stable.
+        unsafe impl guestmem::GuestMemoryAccess for Backing {
+            fn mapping(&self) -> Option<std::ptr::NonNull<u8>> {
+                self.memory.mapping()
+            }
+
+            fn max_address(&self) -> u64 {
+                self.memory.max_address()
+            }
+
+            fn supports_kernel_lock(&self) -> bool {
+                self.kernel_lockable
+            }
+
+            fn supports_user_lock(&self) -> bool {
+                self.user_lockable
+            }
+        }
+
+        for kernel_lockable in [false, true] {
+            for user_lockable in [false, true] {
+                let memory = GuestMemory::new(
+                    "capabilities",
+                    Backing {
+                        memory: guestmem::AlignedHeapMemory::new(hvdef::HV_PAGE_SIZE as usize),
+                        kernel_lockable,
+                        user_lockable,
+                    },
+                );
+                let result = validate_guest_memory_locking(false, &memory);
+                if kernel_lockable || user_lockable {
+                    assert!(matches!(
+                        result.unwrap_err().0,
+                        ErrorInner::InvalidConfiguration(_)
+                    ));
+                } else {
+                    result.unwrap();
+                }
+                validate_guest_memory_locking(true, &memory).unwrap();
+            }
+        }
+    }
 
     #[test]
     fn can_disable_snp_cpuid_offloads() {

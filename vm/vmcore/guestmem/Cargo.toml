@@ -14,6 +14,7 @@ guestmem_core.workspace = true
 inspect.workspace = true
 pal_event.workspace = true
 sparse_mmap.workspace = true
+tracelimit.workspace = true
 minircu = { workspace = true, optional = true }
 trycopy.workspace = true
 

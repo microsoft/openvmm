@@ -1287,3 +1287,47 @@ impl SendResetError {
         self
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use pal_async::DefaultDriver;
+    use pal_async::async_test;
+    use std::io::Read;
+    use test_with_tracing::test;
+    use vmcore::vm_task::SingleDriverBackend;
+    use vmcore::vm_task::VmTaskDriverSource;
+
+    fn connected(driver: &DefaultDriver, credit: u32) -> (Connection, UnixStream) {
+        let source = VmTaskDriverSource::new(SingleDriverBackend::new(driver.clone()));
+        let (socket, peer) = UnixStream::pair().unwrap();
+        let mut conn = Connection::new_guest_initiated(
+            ConnectionKey {
+                local_port: 5000,
+                peer_port: 1024,
+            },
+            0,
+            credit,
+            0,
+            PendingControlPackets::new(),
+            RelaySocket::new(&source.simple(), socket).unwrap(),
+        );
+        conn.state = ConnectionState::Connected;
+        (conn, peer)
+    }
+
+    #[async_test]
+    async fn complete_write_does_not_allocate_retention_ring(driver: DefaultDriver) {
+        let (mut conn, mut peer) = connected(&driver, TX_BUF_SIZE);
+        let data = b"data";
+        assert!(
+            conn.handle_guest_data(&[IoSlice::new(data)], data.len())
+                .unwrap()
+                .is_none()
+        );
+        assert!(conn.recv_buf.is_none());
+        let mut received = [0; 4];
+        peer.read_exact(&mut received).unwrap();
+        assert_eq!(&received, data);
+    }
+}

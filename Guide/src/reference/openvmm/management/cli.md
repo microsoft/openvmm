@@ -116,7 +116,7 @@ describes the source definitions.
   openvmm --hypervisor mshv --isolation snp \
     --igvm firmware=path/to/snp-linux-direct.bin,personality=linux-direct \
     --com1 console \
-    --hv --no-vmbus -m 160MB -p 1
+    --hv --no-vmbus --memory size=160MB -p 1
   ```
 * `--snp-restricted-injection`: Enable restricted interrupt injection in the
   MSHV partition and loader-generated SNP VMSA. This is only supported on mshv
@@ -125,6 +125,23 @@ describes the source definitions.
   SNP GHCB CPUID requests so they are forwarded to OpenVMM. The default is
   offloading enabled. This diagnostic parameter is meaningful only with
   `--isolation snp`.
+* MSHV SNP disables guest-RAM locking and exports. Devices use owned bounce
+  buffers.
+  Guest RAM keeps the ordinary THP default. Existing guest-memory backing
+  files are not supported. The MSHV backend rejects
+  unsupported RAM backing before allocation and mapping. Devices that need
+  guest-memory locking or exports fail at device binding or when they request
+  access. MSHV SNP also rejects device-backed memory mappings, including RAM
+  overlays. Software devices are not subject to a CLI allow-list. Disk format
+  and direct-I/O support are checked by the selected disk backend.
+  See [guest-memory I/O policy](#guest-memory-io-policy).
+
+  OpenVMM opens or creates a requested RAM backing file before backend
+  validation. A rejected SNP configuration can leave that file on disk.
+  No guest RAM is allocated or mapped before this validation.
+
+  For VM-service configuration, see [MSHV SNP devices](grpc.md#mshv-snp-devices).
+
 * `--nested-virt`: Expose hardware virtualization (VMX/SVM) to the guest so it
   can run its own hypervisor (Hyper-V, KVM, etc.). Only supported on `x86_64`,
   and only by backends that support nested virtualization (currently WHP,
@@ -553,6 +570,20 @@ a single queue:
 The in-flight limit is per queue: eight queues at the default depth 64 allow
 512 concurrent requests per disk. This limit is separate from the virtqueue
 descriptor-ring size.
+
+#### Guest-memory I/O policy
+
+`--force-guest-memory-bounce` disables user-mode and kernel page locking and
+backing exports for guest RAM. It defaults to off. MSHV SNP selects this
+backing restriction automatically. Backends use copying or staging paths
+where available; unsupported export requests fail when made.
+This option does not enable pointer-based VMBus rings or synthetic page loans.
+
+```admonish warning
+This is a VMM backing restriction, not Linux memory isolation. The force-bounce
+option does not revoke other mappings, change guest page visibility, or add
+kernel enforcement.
+```
 
 **CXL test endpoint** (comma-separated option): `--cxl-test`
 

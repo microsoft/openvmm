@@ -150,6 +150,15 @@ pub struct NumaDistanceCli {
     long_version = openvmm_build_info::get().long_version(),
 )]
 pub struct Options {
+    /// Disable persistent guest-RAM locking while keeping CPU copies available.
+    ///
+    /// Unsupported export operations fail when requested.
+    /// VMBus rings and synthetic-page loans may be unavailable. Host-owned
+    /// I/O buffers are not restricted. MSHV SNP uses non-lockable backing
+    /// automatically, without this option.
+    #[clap(long = "force-guest-memory-bounce")]
+    pub force_guest_memory_bounce: bool,
+
     /// processor count
     #[clap(short = 'p', long, value_name = "COUNT", default_value = "1")]
     pub processors: u32,
@@ -1599,6 +1608,13 @@ impl Options {
                 anyhow::bail!("SNP isolation currently does not support hugetlb memory");
             }
         }
+        Ok(())
+    }
+
+    /// Validates VM options before resource construction or other side effects.
+    pub fn validate_vm_options(&self) -> anyhow::Result<()> {
+        self.validate_isolation_options()?;
+        self.validate_igvm_options()?;
         Ok(())
     }
 
@@ -4418,6 +4434,20 @@ mod tests {
         }
     }
 
+    #[test]
+    fn force_guest_memory_bounce_is_vm_wide_and_defaults_off() {
+        assert!(
+            !Options::try_parse_from(["openvmm"])
+                .unwrap()
+                .force_guest_memory_bounce
+        );
+        assert!(
+            Options::try_parse_from(["openvmm", "--force-guest-memory-bounce"])
+                .unwrap()
+                .force_guest_memory_bounce
+        );
+    }
+
     /// `--version` reports the resolved build identity rather than clap's
     /// default, which would be the parser crate's own name and version.
     #[test]
@@ -6204,6 +6234,8 @@ mod tests {
             "--isolation",
             "snp",
             "--snp-restricted-injection",
+            "--memory",
+            "thp=off",
         ])
         .unwrap();
         assert_eq!(
@@ -6218,6 +6250,8 @@ mod tests {
             "--isolation",
             "snp",
             "--snp-restricted-injection",
+            "--memory",
+            "thp=off",
         ])
         .unwrap();
         opt.validate_isolation_options().unwrap();
