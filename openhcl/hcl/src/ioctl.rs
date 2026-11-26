@@ -1426,6 +1426,36 @@ impl MshvHvcall {
             Err(status.result().unwrap_err())
         }
     }
+
+    /// Asks the vTSM (virtual TSM) to authorize, or with `authorize` false to
+    /// unauthorize, DMA for the device the host assigned with
+    /// `logical_device_id`, on a VBS-isolated partition. The hypervisor denies
+    /// DMA from every device assigned to the partition until it's authorized.
+    ///
+    /// [`HypercallCode::HvCallVbsVmCallAuthorizeDeviceIo`] must be allowed.
+    pub fn authorize_device_io(
+        &self,
+        logical_device_id: u64,
+        authorize: bool,
+    ) -> Result<(), HvError> {
+        let input = hvdef::hypercall::VbsVmCallAuthorizeDeviceIo {
+            logical_device_id,
+            authorize: authorize.into(),
+            reserved: [0; 7],
+        };
+
+        // SAFETY: The input is the correct type for this hypercall, which has
+        //         no output.
+        unsafe {
+            self.hvcall(
+                HypercallCode::HvCallVbsVmCallAuthorizeDeviceIo,
+                &input,
+                &mut (),
+            )
+            .expect("submitting hypercall should not fail")
+            .result()
+        }
+    }
 }
 
 /// The HCL device and collection of fds.

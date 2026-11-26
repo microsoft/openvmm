@@ -137,6 +137,7 @@ async fn test_negotiate_version(driver: DefaultDriver) {
             Arc::new(TdispNoopResourceValidator::new()),
             IsolationType::None,
             Vtl::Vtl0,
+            false,
         )
         .await
         .unwrap();
@@ -208,6 +209,7 @@ async fn test_tdisp_interface_get_device_interface_info(driver: DefaultDriver) {
             Arc::new(TdispNoopResourceValidator::new()),
             IsolationType::None,
             Vtl::Vtl0,
+            false,
         )
         .await
         .unwrap();

@@ -245,6 +245,7 @@ async fn connect_relay_with(
             Arc::new(TdispNoopResourceValidator::new()),
             IsolationType::Snp,
             Vtl::Vtl0,
+            false,
         )
         .await
         .unwrap();
@@ -254,8 +255,14 @@ async fn connect_relay_with(
     let tdisp_capable = match relay_tdisp {
         RelayTdisp::Assume(tdisp_capable) => tdisp_capable,
         RelayTdisp::Probe => {
-            super::probe_tdisp_capable(&client, &device, Guid::new_random(), &tdisp_operations)
-                .await
+            super::probe_tdisp_capable(
+                &client,
+                &device,
+                Guid::new_random(),
+                &tdisp_operations,
+                false,
+            )
+            .await
         }
     };
 

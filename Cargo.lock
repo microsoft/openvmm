@@ -5808,6 +5808,7 @@ version = "0.0.0"
 dependencies = [
  "anyhow",
  "futures",
+ "guid",
  "hcl",
  "hvdef",
  "inspect",

@@ -773,6 +773,7 @@ open_enum! {
 
         // VBS guest calls.
         HvCallVbsVmCallReport = 0xC001,
+        HvCallVbsVmCallAuthorizeDeviceIo = 0xC003,
     }
 }
 
@@ -2277,6 +2278,17 @@ pub mod hypercall {
     pub struct VbsVmCallReportOutput {
         pub report: [u8; VBS_VM_MAX_REPORT_SIZE],
     }
+
+    /// Input for [`HypercallCode::HvCallVbsVmCallAuthorizeDeviceIo`].
+    #[repr(C)]
+    #[derive(Copy, Clone, Debug, IntoBytes, Immutable, KnownLayout, FromBytes)]
+    pub struct VbsVmCallAuthorizeDeviceIo {
+        pub logical_device_id: u64,
+        /// 1 to authorize the device's DMA, and 0 to unauthorize it.
+        pub authorize: u8,
+        pub reserved: [u8; 7],
+    }
+    const_assert!(size_of::<VbsVmCallAuthorizeDeviceIo>() == 16);
 
     #[bitfield(u8)]
     #[derive(IntoBytes, Immutable, KnownLayout, FromBytes)]

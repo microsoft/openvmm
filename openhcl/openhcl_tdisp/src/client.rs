@@ -79,12 +79,15 @@ impl TdispClient {
     ///   assigned to, which decides the guest protocol to negotiate.
     /// * `target_vtl` - The VTL the device is assigned to.
     /// * `bar_masks` - Which BARs the device implements.
+    /// * `allow_unattested_devices` - Allow the device without TDISP attestation,
+    ///   skipping the steps that need it.
     pub fn new(
         transport: Box<dyn TdispCommandTransport>,
         resource_validator: Arc<dyn TdispResourceValidationInterface>,
         isolation_type: IsolationType,
         target_vtl: Vtl,
         bar_masks: [bool; 6],
+        allow_unattested_devices: bool,
     ) -> Self {
         Self(futures::lock::Mutex::new(TdispClientState::new(
             transport,
@@ -92,6 +95,7 @@ impl TdispClient {
             isolation_type,
             target_vtl,
             bar_masks,
+            allow_unattested_devices,
         )))
     }
 
@@ -323,6 +327,9 @@ struct TdispClientState {
     /// Platform hooks used to gate attestation and unblock device resources.
     #[inspect(skip)]
     resource_validator: Arc<dyn TdispResourceValidationInterface>,
+    /// Allow the device without TDISP attestation, skipping the steps that
+    /// need it.
+    allow_unattested_devices: bool,
 }
 
 impl TdispClientState {
@@ -332,6 +339,7 @@ impl TdispClientState {
         isolation_type: IsolationType,
         target_vtl: Vtl,
         bar_masks: [bool; 6],
+        allow_unattested_devices: bool,
     ) -> Self {
         Self {
             transport,
@@ -347,6 +355,7 @@ impl TdispClientState {
             target_vtl,
             bar_masks,
             resource_validator,
+            allow_unattested_devices,
         }
     }
 
@@ -496,6 +505,11 @@ impl TdispClientState {
     /// state exists to keep the device from modifying its resources between
     /// the bind and attestation.
     async fn bind_interface(&mut self) -> anyhow::Result<()> {
+        if self.allow_unattested_devices {
+            self.mutable_state.update_tdi_state(TdispTdiState::Locked);
+            return Ok(());
+        }
+
         let state_before = self.tdi_state();
         let res = self
             .send_command(crate::new_bind_command(self.transport.bus_device_id()))
@@ -529,6 +543,11 @@ impl TdispClientState {
     /// Start a bound device, transitioning the TDI from Locked to Run. This is
     /// the point from which resources can be accepted into the guest context.
     async fn start_device(&mut self) -> anyhow::Result<()> {
+        if self.allow_unattested_devices {
+            self.mutable_state.update_tdi_state(TdispTdiState::Run);
+            return Ok(());
+        }
+
         let state_before = self.tdi_state();
         let res = self
             .send_command(crate::new_start_tdi_command(self.transport.bus_device_id()))
@@ -749,6 +768,11 @@ impl TdispClientState {
     /// with the state the host advertised after unbind, the function will
     /// panic.
     async fn unbind(&mut self, reason: TdispGuestUnbindReason) {
+        if self.allow_unattested_devices {
+            // Nothing was bound on the host, and DMA stays unblocked.
+            return;
+        }
+
         let validator = self.resource_validator.clone();
         let device_id = self.mutable_state.guest_device_id;
 
@@ -865,6 +889,10 @@ impl TdispClientState {
             ?self.isolation_type,
             "querying TDISP capabilities for device given VM isolation type"
         );
+
+        if self.allow_unattested_devices {
+            return Ok(TdispDeviceInterfaceInfo::default());
+        }
 
         let target_protocol = match self.isolation_type {
             IsolationType::Snp => TdispGuestProtocolType::AmdSevTioV1,
@@ -1076,6 +1104,10 @@ impl TdispClientState {
                 message: format!("tdisp_attest_device: post-start validation failed: {}", e),
             })?;
 
+        if self.allow_unattested_devices {
+            return Ok(());
+        }
+
         // Fetch and save the TDI interface report so callers can inspect the
         // attested device's reported capabilities and MMIO ranges.
         let tdi_report = self.get_tdi_report().await.context(
@@ -1237,6 +1269,22 @@ impl TdispClientState {
                 length,
                 "ignoring MMIO reconfiguration callback because device is not in Run state"
             );
+            return Ok(());
+        }
+
+        if self.allow_unattested_devices {
+            // There's no TDI report to classify the BAR by, so only unblock DMA.
+            if !self.mutable_state.dma_unblocked {
+                let device_id = self
+                    .mutable_state
+                    .guest_device_id
+                    .id()
+                    .context("tdisp_on_mmio_reconfigured: no TDI device id is known")?;
+                self.resource_validator
+                    .tdisp_unblock_dma(self.target_vtl, device_id)
+                    .context("tdisp_on_mmio_reconfigured: failed to unblock DMA")?;
+                self.mutable_state.dma_unblocked = true;
+            }
             return Ok(());
         }
 
@@ -1405,6 +1453,7 @@ mod tests {
             IsolationType::None,
             Vtl::Vtl0,
             present_bars,
+            false,
         )
     }
 
@@ -1568,5 +1617,32 @@ mod tests {
             ]
         );
         assert_eq!(dma, TdispResourceIsolation::Private);
+    }
+
+    /// With the host checks bypassed, attestation sends the host no TDISP
+    /// command, and DMA is unblocked and stays unblocked across an unbind.
+    #[test]
+    fn bypassed_host_checks_unblock_dma_without_the_host() {
+        let validator = Arc::new(crate::noop::TdispNoopResourceValidator::new());
+        let mut state = TdispClientState::new(
+            Box::new(PanickingTransport),
+            validator.clone(),
+            IsolationType::Vbs,
+            Vtl::Vtl0,
+            [true, true, false, false, false, false],
+            true,
+        );
+        futures::executor::block_on(async {
+            let info = state.query_capabilities().await.unwrap();
+            state.attest(info).await.unwrap();
+            assert_eq!(state.tdi_state(), TdispTdiState::Run);
+            state
+                .on_mmio_reconfigured(0, 0x1000_0000, 0x1000)
+                .await
+                .unwrap();
+            assert!(validator.dma_unblocked());
+            state.unbind(TdispGuestUnbindReason::Graceful).await;
+            assert!(validator.dma_unblocked());
+        });
     }
 }

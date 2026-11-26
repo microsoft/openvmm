@@ -203,6 +203,9 @@ pub struct DevicePolicyConfig {
     /// When the relay runs. Defaults to off when omitted.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub vpci_relay: Option<product_policy::VpciRelayMode>,
+    /// Allow devices without TDISP attestation. Defaults to false when omitted.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub allow_unattested_devices: bool,
 }
 
 impl Image {
