@@ -44,7 +44,8 @@ image.
 
 The `cargo xflowey restore-packages` script will automatically pull down a
 precompiled copy of the `mu_msvm` UEFI firmware from the [microsoft/mu_msvm]
-GitHub repo.
+GitHub repo. The default firmware uses the Patina DXE core with CLANGPDB for
+both x86_64 and AArch64.
 
 Alternatively, for those that wish to manually download / build `mu_msvm`:
 follow the instructions over on the [microsoft/mu_msvm] repo, and ensure the
