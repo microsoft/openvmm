@@ -6,6 +6,7 @@
 // TODO: continue to remove these hardcoded deps
 use acpi::cedt::Cedt;
 use acpi::dsdt;
+use acpi::ssdt::PcieHotplugSlot;
 use acpi::ssdt::Ssdt;
 use acpi_spec::madt::InterruptPolarity;
 use acpi_spec::madt::InterruptTriggerMode;
@@ -280,23 +281,33 @@ pub struct BuiltPcieAcpiTables {
 pub fn build_pcie_acpi_tables(
     pcie_host_bridges: &[PcieHostBridge],
 ) -> Result<BuiltPcieAcpiTables, PcieAcpiBuildError> {
+    build_pcie_acpi_tables_with_hotplug(pcie_host_bridges, None)
+}
+
+fn build_pcie_acpi_tables_with_hotplug(
+    pcie_host_bridges: &[PcieHostBridge],
+    slot: Option<PcieHotplugSlot>,
+) -> Result<BuiltPcieAcpiTables, PcieAcpiBuildError> {
     let mut ssdt = Ssdt::new();
     let mut cedt = Cedt::new();
     let mut has_cedt_entries = false;
 
     for bridge in pcie_host_bridges {
-        ssdt.add_pcie(acpi::ssdt::PcieHostBridgeEntry {
-            index: bridge.index,
-            segment: bridge.segment,
-            start_bus: bridge.start_bus,
-            end_bus: bridge.end_bus,
-            ecam_range: bridge.ecam_range,
-            low_mmio: bridge.low_mmio,
-            high_mmio: bridge.high_mmio,
-            cxl: bridge.cxl.is_some(),
-            vnode: bridge.vnode,
-            preserve_boot_config: bridge.preserve_boot_config,
-        });
+        ssdt.add_pcie_with_hotplug_slot(
+            acpi::ssdt::PcieHostBridgeEntry {
+                index: bridge.index,
+                segment: bridge.segment,
+                start_bus: bridge.start_bus,
+                end_bus: bridge.end_bus,
+                ecam_range: bridge.ecam_range,
+                low_mmio: bridge.low_mmio,
+                high_mmio: bridge.high_mmio,
+                cxl: bridge.cxl.is_some(),
+                vnode: bridge.vnode,
+                preserve_boot_config: bridge.preserve_boot_config,
+            },
+            slot.filter(|slot| slot.bridge_index == bridge.index),
+        );
 
         if let Some(cxl) = &bridge.cxl {
             if let Err(source) = cedt.add_cxl_host_bridge(
@@ -1168,6 +1179,19 @@ impl<T: AcpiTopology> AcpiTablesBuilder<'_, T> {
     where
         F: FnOnce(&mut dsdt::Dsdt),
     {
+        self.build_acpi_tables_with_pcie_hotplug(gpa, None, add_devices_to_dsdt)
+    }
+
+    /// Builds ACPI tables with an optional ACPI managed PCIe slot.
+    pub fn build_acpi_tables_with_pcie_hotplug<F>(
+        &self,
+        gpa: u64,
+        slot: Option<PcieHotplugSlot>,
+        add_devices_to_dsdt: F,
+    ) -> BuiltAcpiTables
+    where
+        F: FnOnce(&mut dsdt::Dsdt),
+    {
         let mut dsdt_data = dsdt::Dsdt::new();
         // Name(\_S0, Package(2){0, 0})
         dsdt_data.add_object(&dsdt::NamedObject::new(
@@ -1199,10 +1223,15 @@ impl<T: AcpiTopology> AcpiTablesBuilder<'_, T> {
             dsdt_data.add_object(&proc);
         }
 
-        self.build_acpi_tables_inner(gpa, &dsdt_data.to_bytes())
+        self.build_acpi_tables_inner(gpa, &dsdt_data.to_bytes(), slot)
     }
 
-    fn build_acpi_tables_inner(&self, gpa: u64, dsdt: &[u8]) -> BuiltAcpiTables {
+    fn build_acpi_tables_inner(
+        &self,
+        gpa: u64,
+        dsdt: &[u8],
+        slot: Option<PcieHotplugSlot>,
+    ) -> BuiltAcpiTables {
         let mut b = acpi::builder::Builder::new(gpa + 0x1000, OEM_INFO);
 
         let dsdt = b.append_raw(dsdt);
@@ -1352,7 +1381,7 @@ impl<T: AcpiTopology> AcpiTablesBuilder<'_, T> {
                 self.with_iort(|t| b.append(t));
             }
 
-            let pcie_tables = build_pcie_acpi_tables(self.pcie_host_bridges)
+            let pcie_tables = build_pcie_acpi_tables_with_hotplug(self.pcie_host_bridges, slot)
                 .expect("PCIe ACPI table build should not fail");
             b.append_raw(&pcie_tables.ssdt);
             if let Some(cedt) = pcie_tables.cedt {
