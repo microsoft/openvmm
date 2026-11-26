@@ -846,3 +846,6 @@ async fn relay_read_file(
     }
     Ok(())
 }
+
+#[cfg(test)]
+mod tests;
