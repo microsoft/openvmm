@@ -914,7 +914,7 @@ impl ExecBuilder<'_> {
             None
         };
 
-        let stderr = if self.with_stdout {
+        let stderr = if self.with_stderr {
             let (id, stderr) = self
                 .client
                 .connect_data()
@@ -995,5 +995,146 @@ impl ExitStatus {
     /// Whether the process successfully terminated.
     pub fn success(&self) -> bool {
         self.response.exit_code == 0
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use futures::FutureExt;
+    use futures::StreamExt;
+    use mesh_rpc::client::ExistingConnection;
+    use pal_async::DefaultDriver;
+    use pal_async::async_test;
+    use test_with_tracing::test;
+
+    async fn spawn_with_capture(
+        driver: DefaultDriver,
+        stdout: bool,
+        stderr: bool,
+    ) -> (
+        Option<socket2::Socket>,
+        Option<socket2::Socket>,
+        ExecRequest,
+    ) {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("diagnostics.sock");
+        let mut listener =
+            PolledSocket::new(&driver, unix_socket::UnixListener::bind(&path).unwrap()).unwrap();
+        let (client_socket, server_socket) = unix_socket::UnixStream::pair().unwrap();
+        let mut server = mesh_rpc::Server::new();
+        let mut requests = server.add_service::<diag_proto::UnderhillDiag>();
+        let client = DiagClient::new(
+            driver.clone(),
+            VmType::HybridVsock(path),
+            ExistingConnection::new(PolledSocket::new(&driver, client_socket).unwrap()),
+        );
+        let (stop_data, stopped_data) = mesh::oneshot();
+
+        let run_client = async {
+            let mut process = client
+                .exec("test-command")
+                .stdout(stdout)
+                .stderr(stderr)
+                .spawn()
+                .await
+                .unwrap();
+            let stdout = process.stdout.take();
+            let stderr = process.stderr.take();
+            assert!(process.wait().await.unwrap().success());
+            client.ttrpc.shutdown().await;
+            stop_data.send(());
+            (stdout, stderr)
+        };
+        let serve_requests = async {
+            let mut captured = None;
+            while let Some((_, request)) = requests.next().await {
+                match request {
+                    diag_proto::UnderhillDiag::Exec(request, response) => {
+                        assert!(captured.is_none(), "expected only one Exec request");
+                        captured = Some(request);
+                        response.send(Ok(diag_proto::ExecResponse { pid: 1 }));
+                    }
+                    diag_proto::UnderhillDiag::Wait(_, response) => {
+                        response.send(Ok(WaitResponse { exit_code: 0 }));
+                    }
+                    _ => panic!("unexpected diagnostics RPC"),
+                }
+            }
+            captured.expect("the client must send an Exec request")
+        };
+        let server_driver = driver.clone();
+        let serve_control = async move {
+            server
+                .run_single(&server_driver, server_socket)
+                .await
+                .unwrap();
+        };
+        let serve_data = async {
+            let mut stopped = stopped_data.fuse();
+            let mut connections = Vec::new();
+            loop {
+                let (socket, _) = futures::select! {
+                    connection = listener.accept().fuse() => connection.unwrap(),
+                    _ = stopped => break,
+                };
+                let mut socket = PolledSocket::new(&driver, socket).unwrap();
+                let expected = format!("CONNECT {}\n", diag_proto::VSOCK_DATA_PORT);
+                let mut header = vec![0; expected.len()];
+                socket.read_exact(&mut header).await.unwrap();
+                assert_eq!(header, expected.as_bytes());
+                socket.write_all(b"OK 1\n").await.unwrap();
+                let id = connections.len() as u64 + 1;
+                socket.write_all(&id.to_ne_bytes()).await.unwrap();
+                connections.push(socket);
+            }
+        };
+
+        let ((stdout, stderr), request, (), ()) =
+            futures::join!(run_client, serve_requests, serve_control, serve_data);
+        (stdout, stderr, request)
+    }
+
+    // Requests stderr capture without stdout using a local diagnostics transport.
+    // Expects a stderr socket and connection ID, without creating a stdout socket.
+    #[async_test]
+    async fn test_exec_stderr_without_stdout(driver: DefaultDriver) {
+        let (stdout, stderr, request) = spawn_with_capture(driver, false, true).await;
+
+        assert!(stdout.is_none());
+        assert!(
+            stderr.is_some(),
+            "stderr(true) must open a stderr socket even when stdout(false)"
+        );
+        assert_eq!(request.stdout, 0);
+        assert_ne!(request.stderr, 0);
+    }
+
+    // Requests both output streams to exercise the local data-connection fixture.
+    // Expects separate stdout and stderr sockets with distinct connection IDs.
+    #[async_test]
+    async fn test_exec_captures_stdout_and_stderr(driver: DefaultDriver) {
+        let (stdout, stderr, request) = spawn_with_capture(driver, true, true).await;
+
+        assert!(stdout.is_some());
+        assert!(stderr.is_some());
+        assert_ne!(request.stdout, 0);
+        assert_ne!(request.stderr, 0);
+        assert_ne!(request.stdout, request.stderr);
+    }
+
+    // Requests stdout capture with stderr disabled using a local diagnostics transport.
+    // Expects a stdout socket and connection ID, without creating a stderr socket.
+    #[async_test]
+    async fn test_exec_stdout_without_stderr(driver: DefaultDriver) {
+        let (stdout, stderr, request) = spawn_with_capture(driver, true, false).await;
+
+        assert!(stdout.is_some());
+        assert!(
+            stderr.is_none(),
+            "stderr(false) must not open a stderr socket even when stdout(true)"
+        );
+        assert_ne!(request.stdout, 0);
+        assert_eq!(request.stderr, 0);
     }
 }

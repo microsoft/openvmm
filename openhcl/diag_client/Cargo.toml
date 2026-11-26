@@ -27,5 +27,10 @@ powershell_builder.workspace = true
 vmsocket.workspace = true
 windows-sys = { workspace = true, features = ["Win32_Networking_WinSock"] }
 
+[dev-dependencies]
+mesh.workspace = true
+tempfile.workspace = true
+test_with_tracing.workspace = true
+
 [lints]
 workspace = true
