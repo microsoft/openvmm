@@ -8,5 +8,9 @@ rust-version.workspace = true
 
 [dependencies]
 zerocopy.workspace = true
+
+[dev-dependencies]
+test_with_tracing.workspace = true
+
 [lints]
 workspace = true
