@@ -845,3 +845,6 @@ mod test {
         }
     }
 }
+
+#[cfg(test)]
+mod contract_tests;
