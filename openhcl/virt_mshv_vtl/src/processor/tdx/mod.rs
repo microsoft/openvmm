@@ -75,6 +75,7 @@ use virt_support_apic::ApicClient;
 use virt_support_apic::OffloadNotSupported;
 use virt_support_x86emu::emulate::EmulatedMemoryOperation;
 use virt_support_x86emu::emulate::EmulatorSupport as X86EmulatorSupport;
+use virt_support_x86emu::emulate::MemoryOpOutcome;
 use virt_support_x86emu::emulate::TranslateMode;
 use virt_support_x86emu::emulate::emulate_insn_memory_op;
 use virt_support_x86emu::emulate::emulate_io;
@@ -674,6 +675,10 @@ impl HardwareIsolatedBacking for TdxBacked {
         vtl: GuestVtl,
         event: HvX64PendingExceptionEvent,
     ) {
+        if event.vector() == u16::from(x86defs::Exception::PAGE_FAULT.0) {
+            this.runner.set_cr2(event.exception_parameter());
+        }
+
         let new_intr = InterruptionInformation::new()
             .with_valid(true)
             .with_deliver_error_code(event.deliver_error_code())
@@ -3426,7 +3431,7 @@ impl UhProcessor<'_, TdxBacked> {
                     vtl,
                     cache: TdxEmulationCache::default(),
                 };
-                emulate_insn_memory_op(
+                if emulate_insn_memory_op(
                     &mut emulation_state,
                     gm,
                     dev,
@@ -3435,7 +3440,11 @@ impl UhProcessor<'_, TdxBacked> {
                     x86emu::AlignmentMode::Unaligned,
                     EmulatedMemoryOperation::Write(&buf[..len]),
                 )
-                .await?;
+                .await?
+                    == MemoryOpOutcome::FaultInjected
+                {
+                    return Ok(());
+                }
             }
 
             GdtrOrIdtrInstruction::Lgdt | GdtrOrIdtrInstruction::Lidt => {
@@ -3446,7 +3455,7 @@ impl UhProcessor<'_, TdxBacked> {
                     vtl,
                     cache: TdxEmulationCache::default(),
                 };
-                emulate_insn_memory_op(
+                if emulate_insn_memory_op(
                     &mut emulation_state,
                     gm,
                     dev,
@@ -3455,7 +3464,11 @@ impl UhProcessor<'_, TdxBacked> {
                     x86emu::AlignmentMode::Unaligned,
                     EmulatedMemoryOperation::Read(&mut buf[..len]),
                 )
-                .await?;
+                .await?
+                    == MemoryOpOutcome::FaultInjected
+                {
+                    return Ok(());
+                }
                 let table = TableRegister {
                     limit: u16::from_le_bytes(buf[..2].try_into().unwrap()),
                     base: u64::from_le_bytes(buf[2..len].try_into().unwrap()),
@@ -3534,7 +3547,7 @@ impl UhProcessor<'_, TdxBacked> {
                         vtl,
                         cache: TdxEmulationCache::default(),
                     };
-                    emulate_insn_memory_op(
+                    if emulate_insn_memory_op(
                         &mut emulation_state,
                         gm,
                         dev,
@@ -3543,7 +3556,11 @@ impl UhProcessor<'_, TdxBacked> {
                         x86emu::AlignmentMode::Standard,
                         EmulatedMemoryOperation::Write(&value.to_le_bytes()),
                     )
-                    .await?;
+                    .await?
+                        == MemoryOpOutcome::FaultInjected
+                    {
+                        return Ok(());
+                    }
                 }
             }
 
@@ -3569,7 +3586,7 @@ impl UhProcessor<'_, TdxBacked> {
                         cache: TdxEmulationCache::default(),
                     };
                     let mut buf = [0u8; 2];
-                    emulate_insn_memory_op(
+                    if emulate_insn_memory_op(
                         &mut emulation_state,
                         gm,
                         dev,
@@ -3578,7 +3595,11 @@ impl UhProcessor<'_, TdxBacked> {
                         x86emu::AlignmentMode::Standard,
                         EmulatedMemoryOperation::Read(&mut buf),
                     )
-                    .await?;
+                    .await?
+                        == MemoryOpOutcome::FaultInjected
+                    {
+                        return Ok(());
+                    }
                     u16::from_le_bytes(buf)
                 };
                 self.runner.write_vmcs16(

@@ -1543,3 +1543,191 @@ async fn translate_gva_overlay_page() {
 
     validate_gpf_event(support.injected_event().unwrap());
 }
+
+// Descriptor-table exits carry no cached translation, so use an operand
+// address outside the mock's initial translation to force a page walk.
+const OPERAND_GVA: u64 = 0x5000;
+
+// Test: Read and write a non-present guest operand through the memory-only
+//       helper used by TDX descriptor-table instruction emulation.
+// Expected: Inject a guest #PF and report FaultInjected, leaving memory and
+//       RIP unchanged, instead of a fatal error.
+#[async_test]
+async fn insn_memory_op_page_fault_is_injected_not_fatal() {
+    for write in [false, true] {
+        let gm = GuestMemory::allocate(0x4000);
+        let before = vec![0xa5; 0x4000];
+        gm.write_at(0, &before).unwrap();
+        let mut support = MockSupport::new(
+            MockSupportMode::Code(TranslateGvaResultCode::PAGE_NOT_PRESENT),
+            MockSupportTranslation {
+                access_gva: OPERAND_GVA,
+                translate_to_gpa: INITIAL_GPA,
+                access_info: MockAccess::Read,
+            },
+            false,
+            &gm,
+        );
+        let rip = support.state.rip;
+        let mut data = [0x5a; 10];
+        let op = if write {
+            EmulatedMemoryOperation::Write(&data)
+        } else {
+            EmulatedMemoryOperation::Read(&mut data)
+        };
+
+        let result = emulate_insn_memory_op(
+            &mut support,
+            &gm,
+            &MockCpu,
+            OPERAND_GVA,
+            Segment::DS,
+            x86emu::AlignmentMode::Unaligned,
+            op,
+        )
+        .await;
+
+        assert!(
+            matches!(result, Ok(MemoryOpOutcome::FaultInjected)),
+            "guest page fault was not injected (write: {write}): {result:?}"
+        );
+        let event = hvdef::HvX64PendingExceptionEvent::from(u128::from(
+            support.injected_event().expect("expected page fault").reg_0,
+        ));
+        assert!(event.event_pending());
+        assert_eq!(event.event_type(), hvdef::HV_X64_PENDING_EVENT_EXCEPTION);
+        assert_eq!(event.vector(), x86defs::Exception::PAGE_FAULT.0.into());
+        assert!(event.deliver_error_code());
+        assert_eq!(
+            event.error_code(),
+            u32::from(x86defs::PageFaultErrorCode::new().with_write(write)),
+        );
+        assert_eq!(event.exception_parameter(), OPERAND_GVA);
+        assert_eq!(support.state.rip, rip);
+        let mut after = vec![0; before.len()];
+        gm.read_at(0, &mut after).unwrap();
+        assert!(after == before, "faulting access modified memory");
+    }
+}
+
+// Test: Read and write a mapped guest operand through the same helper.
+// Expected: The access succeeds, moves the expected bytes, and injects nothing.
+#[async_test]
+async fn insn_memory_op_mapped_operand_succeeds() {
+    let gm = GuestMemory::allocate(0x4000);
+    let mut support = MockSupport::new(
+        MockSupportMode::Code(TranslateGvaResultCode::SUCCESS),
+        MockSupportTranslation {
+            access_gva: OPERAND_GVA,
+            translate_to_gpa: INITIAL_GPA,
+            access_info: MockAccess::Read,
+        },
+        false,
+        &gm,
+    );
+    let written = [0x3f, 0x00, 0x78, 0x56, 0x34, 0x12, 0x9a, 0xbc, 0xde, 0xf0];
+
+    let outcome = emulate_insn_memory_op(
+        &mut support,
+        &gm,
+        &MockCpu,
+        OPERAND_GVA,
+        Segment::DS,
+        x86emu::AlignmentMode::Unaligned,
+        EmulatedMemoryOperation::Write(&written),
+    )
+    .await
+    .unwrap();
+    assert_eq!(outcome, MemoryOpOutcome::Completed);
+    let mut stored = [0; 10];
+    gm.read_at(INITIAL_GPA, &mut stored).unwrap();
+    assert_eq!(stored, written);
+
+    let mut read = [0; 10];
+    let outcome = emulate_insn_memory_op(
+        &mut support,
+        &gm,
+        &MockCpu,
+        OPERAND_GVA,
+        Segment::DS,
+        x86emu::AlignmentMode::Unaligned,
+        EmulatedMemoryOperation::Read(&mut read),
+    )
+    .await
+    .unwrap();
+    assert_eq!(outcome, MemoryOpOutcome::Completed);
+    assert_eq!(read, written);
+    assert!(support.injected_event().is_none());
+}
+
+// Test: Access a non-canonical operand address through the memory-only helper.
+// Expected: Inject #GP(0) and report FaultInjected instead of a fatal error.
+#[async_test]
+async fn insn_memory_op_segmentation_fault_is_injected_not_fatal() {
+    const NON_CANONICAL_GVA: u64 = 0x8000_0000_0000_0000;
+    let gm = GuestMemory::allocate(0x4000);
+    let mut support = MockSupport::new(
+        MockSupportMode::Code(TranslateGvaResultCode::SUCCESS),
+        MockSupportTranslation {
+            access_gva: OPERAND_GVA,
+            translate_to_gpa: INITIAL_GPA,
+            access_info: MockAccess::Read,
+        },
+        false,
+        &gm,
+    );
+    let mut data = [0; 10];
+
+    let result = emulate_insn_memory_op(
+        &mut support,
+        &gm,
+        &MockCpu,
+        NON_CANONICAL_GVA,
+        Segment::DS,
+        x86emu::AlignmentMode::Unaligned,
+        EmulatedMemoryOperation::Read(&mut data),
+    )
+    .await;
+
+    assert!(
+        matches!(result, Ok(MemoryOpOutcome::FaultInjected)),
+        "segmentation fault was not injected: {result:?}"
+    );
+    validate_gpf_event(support.injected_event().expect("expected #GP"));
+}
+
+// Test: Access an operand whose translated GPA is outside guest memory.
+// Expected: The host-side memory failure remains fatal and nothing is
+//       injected into the guest.
+#[async_test]
+async fn insn_memory_op_host_memory_failure_remains_fatal() {
+    let gm = GuestMemory::allocate(0x4000);
+    let mut support = MockSupport::new(
+        MockSupportMode::Code(TranslateGvaResultCode::SUCCESS),
+        MockSupportTranslation {
+            access_gva: OPERAND_GVA,
+            translate_to_gpa: 0x10_0000,
+            access_info: MockAccess::Read,
+        },
+        false,
+        &gm,
+    );
+    let mut data = [0; 10];
+
+    let result = emulate_insn_memory_op(
+        &mut support,
+        &gm,
+        &MockCpu,
+        OPERAND_GVA,
+        Segment::DS,
+        x86emu::AlignmentMode::Unaligned,
+        EmulatedMemoryOperation::Read(&mut data),
+    )
+    .await;
+
+    assert!(
+        matches!(result, Err(virt::VpHaltReason::TripleFault { .. })),
+        "host memory failure was not fatal: {result:?}"
+    );
+    assert!(support.injected_event().is_none());
+}
