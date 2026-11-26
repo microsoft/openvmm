@@ -23,5 +23,8 @@ parking_lot.workspace = true
 thiserror.workspace = true
 tracing.workspace = true
 
+[dev-dependencies]
+pal_async.workspace = true
+
 [lints]
 workspace = true
