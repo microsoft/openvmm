@@ -9,7 +9,7 @@ rust-version.workspace = true
 [features]
 default = []
 
-encryption = ["vmgs/encryption"]
+encryption = ["vmgs/encryption", "dep:constant_time_eq"]
 
 [dependencies]
 vmgs_format.workspace = true
@@ -23,8 +23,16 @@ mesh.workspace = true
 pal_async.workspace = true
 
 async-trait.workspace = true
+constant_time_eq = { workspace = true, optional = true }
 thiserror.workspace = true
 tracing.workspace = true
+
+[dev-dependencies]
+disk_backend.workspace = true
+disklayer_ram.workspace = true
+parking_lot.workspace = true
+scsi_buffers.workspace = true
+test_with_tracing.workspace = true
 
 [lints]
 workspace = true
