@@ -223,3 +223,145 @@ impl Display for SyslogEntryDisplay<'_> {
         )
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use test_with_tracing::test;
+
+    // Test: Parse extended kmsg records with continuation flags and metadata.
+    // Expected: Priority, 64-bit sequence and microsecond timestamp survive;
+    //       display excludes metadata but raw message retains it.
+    #[test]
+    fn extended_records() {
+        let entry = KmsgParsedEntry::new(
+            b"188,18446744073709551615,1234567,c,caller=T42;disk: retry; pending\n DEVICE=nvme0\n",
+        )
+        .unwrap();
+        assert_eq!(entry.facility, 23);
+        assert_eq!(entry.level, 4);
+        assert_eq!(entry.seq, u64::MAX);
+        assert_eq!(entry.time, Duration::from_micros(1_234_567));
+        assert_eq!(
+            entry.message.as_raw(),
+            "disk: retry; pending\n DEVICE=nvme0\n"
+        );
+        assert_eq!(
+            entry.display(false).to_string(),
+            "[1.234567] disk: retry; pending"
+        );
+        let empty = KmsgParsedEntry::new(b"0,0,0,-;").unwrap();
+        assert_eq!(empty.display(false).to_string(), "[0.000000] ");
+    }
+
+    // Test: Decode the printable escapes emitted by the Linux printk producer.
+    // Expected: ESC preserves terminal coloring, other encoded bytes become
+    //       visible hexadecimal markers, and dictionary lines are omitted.
+    #[test]
+    fn encoded_kernel_text() {
+        let entry =
+            KmsgParsedEntry::new(b"6,9,2,-;a\\x1b[31mb\\x0a\\x5c\\xff\n SUBSYSTEM=pci\n").unwrap();
+        assert_eq!(entry.message.to_string(), "a\x1b[31mb<0a><5c><ff>");
+        assert_eq!(
+            entry.display(false).to_string(),
+            "[0.000002] a\x1b[31mb<0a><5c><ff>"
+        );
+    }
+
+    // Test: Reject kmsg headers with missing, nonnumeric or overflowing fields.
+    // Expected: Invalid records return an error instead of becoming log events.
+    #[test]
+    fn invalid_extended_headers() {
+        for data in [
+            b"".as_slice(),
+            b"6,1,2,-",
+            b"6;message",
+            b"6,1;message",
+            b"x,1,2,-;message",
+            b"4294967296,1,2,-;message",
+            b"6,-1,2,-;message",
+            b"6,18446744073709551616,2,-;message",
+            b"6,1,18446744073709551616,-;message",
+            b"6,1,2,-;\xff",
+        ] {
+            assert!(KmsgParsedEntry::new(data).is_err(), "{data:?}");
+        }
+    }
+
+    // Test: Parse serial-console syslog lines at microsecond boundaries.
+    // Expected: Facility and severity separate correctly, whitespace is
+    //       normalized, and timestamps retain all six fractional digits.
+    #[test]
+    fn syslog_records() {
+        for (input, facility, level, time, expected) in [
+            (
+                "<13>[   3.593853] init: ready  ",
+                1,
+                5,
+                Duration::from_micros(3_593_853),
+                "[3.593853] init: ready",
+            ),
+            (
+                "<191>[0.999999] trace",
+                23,
+                7,
+                Duration::from_micros(999_999),
+                "[0.999999] trace",
+            ),
+            ("<0>[0.000000] ", 0, 0, Duration::ZERO, "[0.000000] "),
+        ] {
+            let entry = SyslogParsedEntry::new(input).unwrap();
+            assert_eq!(entry._facility, facility);
+            assert_eq!(entry.level, level);
+            assert_eq!(entry.time, time);
+            assert_eq!(entry.display(false).to_string(), expected);
+        }
+    }
+
+    // Test: Parse console lines that are not valid timestamped syslog records.
+    // Expected: Malformed records return None for the consumer's plain-text
+    //       fallback, including fractional timestamps of a million microseconds.
+    #[test]
+    fn invalid_syslog_headers() {
+        for input in [
+            "plain console text",
+            "<6[0.000001] text",
+            "<x>[0.000001] text",
+            "<6>0.000001] text",
+            "<6>[0] text",
+            "<6>[0.1 text",
+            "<6>[x.000001] text",
+            "<6>[0.x] text",
+            "<6>[0.1000000] text",
+            "<6>[18446744073709551616.000000] text",
+        ] {
+            assert!(SyslogParsedEntry::new(input).is_none(), "{input}");
+        }
+    }
+
+    // Test: Color parsed events at every severity, with and without a target.
+    // Expected: Critical/error red, warning yellow and informational reset
+    //       match the event level; each colored line ends with terminal reset.
+    #[test]
+    fn severity_colors() {
+        for level in 0..8 {
+            let color = match level {
+                0..=3 => "\x1b[0;31m",
+                4 => "\x1b[0;33m",
+                _ => "\x1b[0m",
+            };
+            let record = format!("{level},2,1000001,-;driver: message \n");
+            let entry = KmsgParsedEntry::new(record.as_bytes()).unwrap();
+            assert_eq!(
+                entry.display(true).to_string(),
+                format!("\x1b[0;32m[1.000001] \x1b[0;33mdriver: {color}message\x1b[0m")
+            );
+            let record = format!("<{level}>[1.000001] message");
+            let entry = SyslogParsedEntry::new(&record).unwrap();
+            assert_eq!(
+                entry.display(true).to_string(),
+                format!("\x1b[0;32m[1.000001] {color}message\x1b[0m")
+            );
+        }
+    }
+}
