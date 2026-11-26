@@ -50,7 +50,7 @@ impl core::fmt::Display for SidecarKernelCommandLine<'_> {
         // directly (all others will be managed by sidecar).
         // When per-CPU overrides are active (servicing restore with outstanding IO),
         // list every CPU that sidecar should NOT start.
-        // Otherwise, list just the base VP of each sidecar node (default behavior).
+        // Otherwise, list sidecar node base VPs and CPUs outside retained nodes.
         f.write_str("boot_cpus=")?;
         let mut comma = "";
         if self.0.per_cpu_state.per_cpu_state_specified {
@@ -64,9 +64,15 @@ impl core::fmt::Display for SidecarKernelCommandLine<'_> {
                 }
             }
         } else {
-            for node in self.0.node_params {
-                write!(f, "{comma}{}", node.base_vp)?;
-                comma = ",";
+            for cpu in 0..self.0.num_cpus {
+                let sidecar_starts_cpu = self.0.node_params.iter().any(|node| {
+                    let base_vp = node.base_vp as usize;
+                    cpu > base_vp && cpu - base_vp < node.vp_count as usize
+                });
+                if !sidecar_starts_cpu {
+                    write!(f, "{comma}{cpu}")?;
+                    comma = ",";
+                }
             }
         }
         Ok(())
@@ -310,4 +316,200 @@ pub fn start_sidecar<'a>(
         config.kernel_command_line()
     );
     Some(config)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use sidecar_defs::PerCpuState;
+    use test_with_tracing::test;
+    use zerocopy::FromZeros;
+
+    fn command_line(
+        num_cpus: usize,
+        per_cpu_state: &PerCpuState,
+        sidecar_ranges: &[(u32, u32)],
+    ) -> String {
+        let node_params: Vec<_> = sidecar_ranges
+            .iter()
+            .map(|&(base_vp, vp_count)| SidecarNodeParams {
+                base_vp,
+                vp_count,
+                ..SidecarNodeParams::new_zeroed()
+            })
+            .collect();
+        let nodes: Vec<_> = sidecar_ranges
+            .iter()
+            .map(|_| SidecarNodeOutput::new_zeroed())
+            .collect();
+        let config = SidecarConfig {
+            num_cpus,
+            per_cpu_state,
+            node_params: &node_params,
+            nodes: &nodes,
+            start_reftime: 0,
+            end_reftime: 0,
+        };
+        config.kernel_command_line().to_string()
+    }
+
+    // Formats cold-boot assignment for sidecar CPUs 0-1 and a skipped singleton CPU 2.
+    // Expects Linux to start CPUs 0 and 2 while sidecar retains application processor 1.
+    #[test]
+    fn test_kernel_command_line_includes_singleton_cpu() {
+        let per_cpu_state = PerCpuState::new_zeroed();
+        assert!(sidecar_node_is_empty(&per_cpu_state, 2, 1));
+
+        assert_eq!(command_line(3, &per_cpu_state, &[(0, 2)]), "boot_cpus=0,2");
+    }
+
+    // Formats cold-boot assignment when both CPUs belong to the same sidecar node.
+    // Expects only the base CPU in the Linux list, leaving its AP to sidecar.
+    #[test]
+    fn test_kernel_command_line_keeps_sidecar_application_processor() {
+        let per_cpu_state = PerCpuState::new_zeroed();
+        assert_eq!(command_line(2, &per_cpu_state, &[(0, 2)]), "boot_cpus=0");
+    }
+
+    // Formats the same mixed topology with explicit per-CPU startup overrides.
+    // Expects Linux CPUs 0 and 2 and excludes the sidecar-started CPU 1.
+    #[test]
+    fn test_kernel_command_line_respects_per_cpu_overrides() {
+        let mut per_cpu_state = PerCpuState {
+            per_cpu_state_specified: true,
+            ..PerCpuState::new_zeroed()
+        };
+        per_cpu_state.sidecar_starts_cpu[1] = true;
+        assert_eq!(command_line(3, &per_cpu_state, &[(0, 2)]), "boot_cpus=0,2");
+    }
+
+    // Formats two sidecar nodes with kernel-only CPUs between and after their ranges.
+    // Expects every base and gap CPU in the Linux list, excluding both sidecar APs.
+    #[test]
+    fn test_kernel_command_line_includes_gaps_between_sidecar_nodes() {
+        let per_cpu_state = PerCpuState::new_zeroed();
+        assert_eq!(
+            command_line(6, &per_cpu_state, &[(0, 2), (3, 2)]),
+            "boot_cpus=0,2,3,5"
+        );
+    }
+
+    // Formats prepared cold-boot configurations with skipped CPUs and larger nodes.
+    // Expects the exact Linux CPU list, leaving every sidecar AP out of that list.
+    #[test]
+    fn test_kernel_command_line_cold_boot_configurations() {
+        let ranges_1024: Vec<_> = (0..32).map(|i| (i * 32, 32)).collect();
+        let ranges_3000: Vec<_> = (0..30)
+            .map(|i| (i * 32, 32))
+            .chain((0..31).map(|i| (960 + i * 32, 32)))
+            .chain([(1952, 8)])
+            .chain((0..32).map(|i| (1960 + i * 32, 32)))
+            .chain([(2984, 16)])
+            .collect();
+        let ranges_mixed: Vec<_> = (0..15)
+            .map(|i| (2 + i * 32, 32))
+            .chain((0..16).map(|i| (485 + i * 32, 32)))
+            .collect();
+        let cases: &[(&str, usize, &[(u32, u32)], &str)] = &[
+            ("leading singletons", 5, &[(2, 3)], "boot_cpus=0,1,2"),
+            (
+                "consecutive singletons between and after nodes",
+                10,
+                &[(0, 2), (5, 3)],
+                "boot_cpus=0,2,3,4,5,8,9",
+            ),
+            ("31 CPUs", 31, &[(0, 31)], "boot_cpus=0"),
+            ("32 CPUs", 32, &[(0, 32)], "boot_cpus=0"),
+            (
+                "33 CPUs in two nodes",
+                33,
+                &[(0, 17), (17, 16)],
+                "boot_cpus=0,17",
+            ),
+            (
+                "adjacent 32-CPU nodes",
+                64,
+                &[(0, 32), (32, 32)],
+                "boot_cpus=0,32",
+            ),
+            (
+                "96 CPUs across three NUMA nodes",
+                96,
+                &[(0, 32), (32, 32), (64, 32)],
+                "boot_cpus=0,32,64",
+            ),
+            (
+                "1024 CPUs with many adjacent sidecar nodes",
+                1024,
+                &ranges_1024,
+                concat!(
+                    "boot_cpus=0,32,64,96,128,160,192,224,256,288,320,352,384,416,448,480,",
+                    "512,544,576,608,640,672,704,736,768,800,832,864,896,928,960,992",
+                ),
+            ),
+            (
+                "3000 CPUs across uneven 960/1000/1040-CPU NUMA nodes",
+                3000,
+                &ranges_3000,
+                concat!(
+                    "boot_cpus=0,32,64,96,128,160,192,224,256,288,320,352,384,416,448,480,",
+                    "512,544,576,608,640,672,704,736,768,800,832,864,896,928,",
+                    "960,992,1024,1056,1088,1120,1152,1184,1216,1248,1280,1312,1344,1376,",
+                    "1408,1440,1472,1504,1536,1568,1600,1632,1664,1696,1728,1760,1792,",
+                    "1824,1856,1888,1920,1952,",
+                    "1960,1992,2024,2056,2088,2120,2152,2184,2216,2248,2280,2312,2344,",
+                    "2376,2408,2440,2472,2504,2536,2568,2600,2632,2664,2696,2728,2760,",
+                    "2792,2824,2856,2888,2920,2952,2984",
+                ),
+            ),
+            (
+                "1000 CPUs with singleton nodes before, between, and after sidecar nodes",
+                1000,
+                &ranges_mixed,
+                concat!(
+                    "boot_cpus=0,1,2,34,66,98,130,162,194,226,258,290,322,354,386,418,450,",
+                    "482,483,484,485,517,549,581,613,645,677,709,741,773,805,837,869,901,",
+                    "933,965,997,998,999",
+                ),
+            ),
+        ];
+        let per_cpu_state = PerCpuState::new_zeroed();
+        for &(name, num_cpus, ranges, expected) in cases {
+            assert_eq!(
+                command_line(num_cpus, &per_cpu_state, ranges),
+                expected,
+                "{name}"
+            );
+        }
+    }
+
+    // Formats multi-node configurations with explicit kernel/sidecar CPU ownership.
+    // Expects all kernel-owned CPUs, including APs, and excludes only sidecar-owned CPUs.
+    #[test]
+    fn test_kernel_command_line_multi_node_overrides() {
+        let cases: &[(&str, &[(u32, u32)], &[usize], &str)] = &[
+            (
+                "kernel and sidecar APs in both nodes",
+                &[(0, 4), (4, 4)],
+                &[2, 5],
+                "boot_cpus=0,1,3,4,6,7",
+            ),
+            (
+                "first NUMA node entirely kernel-owned",
+                &[(4, 4)],
+                &[5, 7],
+                "boot_cpus=0,1,2,3,4,6",
+            ),
+        ];
+        for &(name, ranges, sidecar_cpus, expected) in cases {
+            let mut per_cpu_state = PerCpuState {
+                per_cpu_state_specified: true,
+                ..PerCpuState::new_zeroed()
+            };
+            for &cpu in sidecar_cpus {
+                per_cpu_state.sidecar_starts_cpu[cpu] = true;
+            }
+            assert_eq!(command_line(8, &per_cpu_state, ranges), expected, "{name}");
+        }
+    }
 }
