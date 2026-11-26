@@ -14,6 +14,8 @@ pub mod noop;
 mod sevtio;
 #[cfg(target_os = "linux")]
 mod tdxconnect;
+#[cfg(target_os = "linux")]
+mod vbs;
 
 pub use client::TdispClient;
 pub use client::TdispCommandTransport;
@@ -49,9 +51,12 @@ pub use tdisp_proto::TdispTdiState;
 pub use sevtio::TdispSevTioResourceValidator;
 #[cfg(target_os = "linux")]
 pub use tdxconnect::TdispTdxConnectResourceValidator;
+#[cfg(target_os = "linux")]
+pub use vbs::TdispVbsResourceValidator;
 
 #[cfg(target_os = "linux")]
 use anyhow::Context;
+use guid::Guid;
 use hvdef::Vtl;
 use std::future::Future;
 use std::pin::Pin;
@@ -211,15 +216,21 @@ pub trait TdispResourceValidationInterface: Send + Sync {
 ///   to.
 /// * `vtom` - The address mask with the VTOM bit set, marking where VTOM
 ///   addresses start in the CVM. `None` on a partition without one.
+/// * `instance_id` - The instance ID of the VPCI bus the device is on. The VBS
+///   validator derives the hypervisor's logical device ID from it. That's
+///   temporary, to enable the VBS TDISP flows, which will eventually use the
+///   same guest device ID as the other platforms.
 /// * `is_test_environment` - `true` if running in a test environment.
 pub fn new_resource_validator(
     isolation: IsolationType,
     vtom: Option<u64>,
+    instance_id: Guid,
     is_test_environment: bool,
 ) -> anyhow::Result<Arc<dyn TdispResourceValidationInterface>> {
     tracing::info!(
         ?isolation,
         ?vtom,
+        %instance_id,
         is_test_environment,
         "selecting a TDISP resource validator"
     );
@@ -243,6 +254,9 @@ pub fn new_resource_validator(
             let vtom = vtom.context("a TDX partition requires a VTOM to validate resources")?;
             Ok(Arc::new(TdispTdxConnectResourceValidator::new(vtom)?))
         }
+
+        #[cfg(target_os = "linux")]
+        IsolationType::Vbs => Ok(Arc::new(TdispVbsResourceValidator::new(instance_id)?)),
 
         // Isolation types with no validator of their own, or running in an
         // environment outside of a OpenHCL Linux build

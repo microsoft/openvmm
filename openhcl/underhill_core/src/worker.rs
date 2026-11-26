@@ -3625,6 +3625,8 @@ async fn new_underhill_vm(
                     VpciRelayOptions {
                         // Exercises a mocked TDISP flow for emulated TDISP devices produced by OpenVMM tests.
                         test_tdisp_flow,
+                        allow_unattested_devices: measured_product_policy
+                            .allow_unattested_devices(),
                     },
                 );
 
