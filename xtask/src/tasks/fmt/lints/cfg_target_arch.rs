@@ -116,3 +116,55 @@ impl Lint for CfgTargetArch {
     fn exit_crate(&mut self, _content: &mut Lintable<DocumentMut>) {}
     fn exit_workspace(&mut self, _content: &mut Lintable<DocumentMut>) {}
 }
+
+#[cfg(test)]
+mod tests {
+    use super::super::test_support::failed;
+    use super::super::test_support::lintable;
+    use super::*;
+
+    fn fails(path: &str, text: &str) -> bool {
+        let mut file = lintable(path, text.to_owned(), false);
+        CfgTargetArch.visit_file(&mut file);
+        failed(&file)
+    }
+
+    // Test: Lint target-architecture conditionals that are unjustified, justified
+    //       on the same or previous line, commented out, or use an unknown reason.
+    // Expected: Only recognized justifications, comments and exempt paths pass;
+    //       unknown or empty reasons and justifications two lines above fail.
+    #[test]
+    fn requires_known_adjacent_justification_outside_exempt_paths() {
+        let p = "vm/devices/x/src/lib.rs";
+        let cfg = "#[cfg(target_arch = \"x86_64\")]";
+        assert!(fails(p, cfg));
+        assert!(fails(p, "let a = env!(\"CARGO_CFG_TARGET_ARCH\");"));
+        assert!(!fails(
+            p,
+            &format!("{cfg} // xtask-fmt allow-target-arch sys-crate")
+        ));
+        assert!(!fails(
+            p,
+            &format!("// xtask-fmt allow-target-arch cpu-intrinsic\n{cfg}")
+        ));
+        assert!(fails(
+            p,
+            &format!("// xtask-fmt allow-target-arch cpu-intrinsic\n\n{cfg}")
+        ));
+        assert!(fails(
+            p,
+            &format!("{cfg} // xtask-fmt allow-target-arch because")
+        ));
+        assert!(fails(p, &format!("{cfg} // xtask-fmt allow-target-arch")));
+        assert!(!fails(p, &format!("   // {cfg}")));
+        assert!(!fails(p, "#[cfg(guest_arch = \"x86_64\")]"));
+        for exempt in [
+            "support/a/src/lib.rs",
+            "opentmk/x/src/lib.rs",
+            "vm/kvm/src/lib.rs",
+        ] {
+            assert!(!fails(exempt, cfg), "{exempt}");
+        }
+        assert!(fails("vm/kvmx/src/lib.rs", cfg));
+    }
+}

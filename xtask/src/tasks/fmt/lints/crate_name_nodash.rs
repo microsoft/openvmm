@@ -33,22 +33,19 @@ impl Lint for CrateNameNoDash {
             None => return, // Root of a different workspace, like xsync
         };
 
-        // Check for allow-dash-in-name metadata escape hatch.
-        if let Some(metadata) = content
+        // Check for allow-dash-in-name metadata escape hatch. Lookups work on
+        // both standard and inline TOML tables.
+        if content
             .as_table()
             .get("package")
             .and_then(|x| x.get("metadata"))
             .and_then(|x| x.get("xtask"))
             .and_then(|x| x.get("house-rules"))
+            .and_then(|x| x.get("allow-dash-in-name"))
+            .and_then(|x| x.as_bool())
+            .unwrap_or(false)
         {
-            let props = metadata.as_table().unwrap();
-            for (k, v) in props.iter() {
-                if k == "allow-dash-in-name" {
-                    if v.as_bool().unwrap_or(false) {
-                        return;
-                    }
-                }
-            }
+            return;
         }
 
         let bad_package_name = package_name.contains('-');
@@ -80,4 +77,61 @@ impl Lint for CrateNameNoDash {
     }
 
     fn exit_workspace(&mut self, _content: &mut Lintable<DocumentMut>) {}
+}
+
+#[cfg(test)]
+mod tests {
+    use super::super::test_support::failed;
+    use super::super::test_support::lintable;
+    use super::*;
+
+    fn fails(path: &str, manifest: &str) -> bool {
+        let mut file = lintable(path, manifest.parse::<DocumentMut>().unwrap(), false);
+        CrateNameNoDash.exit_crate(&mut file);
+        failed(&file)
+    }
+
+    // Test: Check crate names and folders with and without dashes, the boolean
+    //       escape hatch set true or false, and a workspace-only manifest.
+    // Expected: Any dash in the name or folder fails unless explicitly allowed;
+    //       manifests without a package are skipped.
+    #[test]
+    fn rejects_dashes_unless_explicitly_allowed() {
+        assert!(!fails(
+            "vm/good_crate/Cargo.toml",
+            "[package]\nname = \"good_crate\"\n"
+        ));
+        assert!(fails(
+            "vm/good_crate/Cargo.toml",
+            "[package]\nname = \"bad-crate\"\n"
+        ));
+        assert!(fails(
+            "vm/bad-dir/Cargo.toml",
+            "[package]\nname = \"good\"\n"
+        ));
+        assert!(fails(
+            "vm/bad-dir/Cargo.toml",
+            "[package]\nname = \"bad-name\"\n"
+        ));
+        let allow = |v: &str| {
+            format!(
+                "[package]\nname = \"bad-name\"\n[package.metadata.xtask.house-rules]\nallow-dash-in-name = {v}\n"
+            )
+        };
+        assert!(!fails("vm/bad-name/Cargo.toml", &allow("true")));
+        assert!(fails("vm/bad-name/Cargo.toml", &allow("false")));
+        assert!(!fails("Cargo.toml", "[workspace]\nmembers = []\n"));
+    }
+
+    // Test: Check a dashed crate whose escape hatch is an inline TOML table,
+    //       and one whose `house-rules` value is not a table at all.
+    // Expected: The inline form is honoured like the standard table form; a
+    //       non-table value grants no exception and is reported, without panicking.
+    #[test]
+    fn inline_table_escape_hatch_is_honoured() {
+        let manifest = "[package]\nname = \"bad-name\"\nmetadata.xtask.house-rules = { allow-dash-in-name = true }\n";
+        assert!(!fails("vm/bad-name/Cargo.toml", manifest));
+        let not_table = "[package]\nname = \"bad-name\"\nmetadata.xtask.house-rules = true\n";
+        assert!(fails("vm/bad-name/Cargo.toml", not_table));
+    }
 }
