@@ -29,6 +29,8 @@ use tdisp::test_helpers::new_null_tdisp_interface;
 use test_with_tracing::test;
 use virt::IsolationType;
 use vmbus_channel::simple::SimpleVmbusDevice;
+use vmcore::vm_task::SingleDriverBackend;
+use vmcore::vm_task::VmTaskDriverSource;
 use vmcore::vpci_msi::MapVpciInterrupt;
 use vmcore::vpci_msi::MsiAddressData;
 use vmcore::vpci_msi::VpciInterruptMapper;
@@ -97,6 +99,7 @@ async fn test_negotiate_version(driver: DefaultDriver) {
     let device = make_noop_device();
     let msi_controller = TestVpciInterruptController::new();
     let (bus, mut channel) = VpciBusDevice::new(
+        &VmTaskDriverSource::new(SingleDriverBackend::new(driver.clone())),
         VpciBusConfig {
             instance_id: Guid::new_random(),
             vtom: None,
@@ -174,6 +177,7 @@ async fn test_tdisp_interface_get_device_interface_info(driver: DefaultDriver) {
     let device = make_noop_device();
     let msi_controller = TestVpciInterruptController::new();
     let (bus, mut channel) = VpciBusDevice::new(
+        &VmTaskDriverSource::new(SingleDriverBackend::new(driver.clone())),
         VpciBusConfig {
             instance_id: Guid::new_random(),
             vtom: None,

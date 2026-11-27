@@ -123,6 +123,7 @@ pub async fn build_dynamic_vpci_device(
                     ))?;
                 msi_conn.connect(msi_controller);
                 let (bus, offer) = vpci::bus::VpciBus::new_unoffered(
+                    driver_source,
                     bus_config,
                     device,
                     register_mmio,

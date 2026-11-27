@@ -148,6 +148,7 @@ impl VpciBusDevice {
     /// Returns a new VPCI bus device, along with the vmbus channel used for bus
     /// communications.
     pub fn new(
+        driver_source: &VmTaskDriverSource,
         config: VpciBusConfig,
         device: Arc<CloseableMutex<dyn ChipsetDevice>>,
         register_mmio: &mut dyn RegisterMmioIntercept,
@@ -164,6 +165,7 @@ impl VpciBusDevice {
         );
         let config_space_offset = config_space.offset().clone();
         let channel = VpciChannel::new(
+            driver_source,
             &device,
             instance_id,
             config_space,
@@ -198,8 +200,9 @@ impl VpciBus {
         vmbus: &dyn vmbus_channel::bus::ParentBus,
         msi_controller: VpciInterruptMapper,
     ) -> Result<Self, CreateBusError> {
-        let (mut this, offer) = Self::new_unoffered(config, device, register_mmio, msi_controller)
-            .map_err(CreateBusError::NotPci)?;
+        let (mut this, offer) =
+            Self::new_unoffered(driver_source, config, device, register_mmio, msi_controller)
+                .map_err(CreateBusError::NotPci)?;
         let channel = offer
             .offer(driver_source, vmbus, false)
             .await
@@ -213,12 +216,14 @@ impl VpciBus {
     /// The returned [`PendingVpciBusOffer`] must be consumed after registering
     /// the bus as a state unit.
     pub fn new_unoffered(
+        driver_source: &VmTaskDriverSource,
         config: VpciBusConfig,
         device: Arc<CloseableMutex<dyn ChipsetDevice>>,
         register_mmio: &mut dyn RegisterMmioIntercept,
         msi_controller: VpciInterruptMapper,
     ) -> Result<(Self, PendingVpciBusOffer), NotPciDevice> {
-        let (bus, channel) = VpciBusDevice::new(config, device, register_mmio, msi_controller)?;
+        let (bus, channel) =
+            VpciBusDevice::new(driver_source, config, device, register_mmio, msi_controller)?;
         let eject = channel.eject_control();
 
         Ok((
@@ -541,6 +546,7 @@ mod tests {
     use guid::Guid;
     use inspect::InspectMut;
     use pal_async::DefaultDriver;
+    use pal_async::DefaultPool;
     use pal_async::async_test;
     use pal_async::task::Spawn;
     use std::sync::Arc;
@@ -549,6 +555,7 @@ mod tests {
     use std::task::Context;
     use std::task::Poll;
     use test_with_tracing::test;
+    use vmcore::vm_task::SingleDriverBackend;
     use vmcore::vpci_msi::VpciInterruptMapper;
 
     const BASE_ADDR: u64 = 0x1000_0000;
@@ -612,7 +619,11 @@ mod tests {
             let device: Arc<CloseableMutex<DeferWriteDevice>> =
                 Arc::new(CloseableMutex::new(DeferWriteDevice::new()));
 
+            // Nothing here runs the channel, so its driver is never polled.
+            let pool = DefaultPool::new();
+            let driver_source = VmTaskDriverSource::new(SingleDriverBackend::new(pool.driver()));
             let (bus, _channel) = VpciBusDevice::new(
+                &driver_source,
                 VpciBusConfig {
                     instance_id: Guid::new_random(),
                     vtom: None,
@@ -783,6 +794,7 @@ mod tests {
             Arc::new(CloseableMutex::new(DeferWriteDevice::new()));
 
         let (bus, _channel) = VpciBusDevice::new(
+            &VmTaskDriverSource::new(SingleDriverBackend::new(driver.clone())),
             VpciBusConfig {
                 instance_id: Guid::new_random(),
                 vtom: None,
@@ -875,7 +887,7 @@ mod tests {
     }
 
     #[async_test]
-    async fn verify_deferred_pci_cfg_read_via_bus(_driver: DefaultDriver) {
+    async fn verify_deferred_pci_cfg_read_via_bus(driver: DefaultDriver) {
         const BASE_ADDR: u64 = 0x1000_0000;
         const READ_OFFSET: u64 = 4;
         const WRITE_OFFSET: u64 = 5;
@@ -885,6 +897,7 @@ mod tests {
             Arc::new(CloseableMutex::new(DeferWriteDevice::new()));
 
         let (bus, _channel) = VpciBusDevice::new(
+            &VmTaskDriverSource::new(SingleDriverBackend::new(driver.clone())),
             VpciBusConfig {
                 instance_id: Guid::new_random(),
                 vtom: None,
