@@ -200,19 +200,19 @@ mod tests {
                 "openhcl-x64-cvm-release.toml",
                 azure.clone(),
                 VpciRelayMode::DefaultOn,
-                false,
+                /* allow_unattested_devices: */ false,
             ),
             (
                 "openhcl-x64-release.toml",
                 azure,
                 VpciRelayMode::DefaultOff,
-                false,
+                /* allow_unattested_devices: */ false,
             ),
             (
                 "openhcl-x64-sivm-release.toml",
                 vec![gpu],
                 VpciRelayMode::MustBeOn,
-                true,
+                /* allow_unattested_devices: */ true,
             ),
         ] {
             let config: igvmfilegen_config::Config =
