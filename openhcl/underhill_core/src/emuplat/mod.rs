@@ -30,7 +30,7 @@ register_static_resolvers! {
 }
 
 pub struct EmuplatServicing {
-    pub rtc_local_clock: Arc<Mutex<local_clock::UnderhillLocalClock>>,
+    pub rtc_local_clock: local_clock::ArcMutexUnderhillLocalClock,
     pub get_backed_adjust_gpa_range:
         Option<Arc<Mutex<i440bx_host_pci_bridge::GetBackedAdjustGpaRange>>>,
     pub netvsp_state: Vec<netvsp::RuntimeSavedState>,
@@ -38,9 +38,13 @@ pub struct EmuplatServicing {
 }
 
 impl EmuplatServicing {
-    pub fn save(&mut self) -> Result<EmuplatSavedState, SaveError> {
+    pub async fn save(&mut self) -> Result<EmuplatSavedState, SaveError> {
+        self.rtc_local_clock
+            .flush()
+            .await
+            .map_err(|err| SaveError::Other(err.context("RTC skew flush failed")))?;
         Ok(EmuplatSavedState {
-            rtc_local_clock: self.rtc_local_clock.lock().save()?,
+            rtc_local_clock: self.rtc_local_clock.0.lock().save()?,
             get_backed_adjust_gpa_range: {
                 self.get_backed_adjust_gpa_range
                     .as_ref()
