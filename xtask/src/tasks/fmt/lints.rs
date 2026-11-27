@@ -385,3 +385,37 @@ fn lint_workspace(
 
     Ok(any_failed)
 }
+
+#[cfg(test)]
+mod test_support {
+    use super::Lintable;
+    use std::path::PathBuf;
+    use std::sync::atomic::AtomicBool;
+    use std::sync::atomic::Ordering;
+    use toml_edit::DocumentMut;
+
+    /// Builds an in-memory lintable rooted at an unused workspace path.
+    pub(super) fn lintable<T>(path: &str, content: T, fix: bool) -> Lintable<T> {
+        Lintable {
+            content,
+            raw: None,
+            fix,
+            path: PathBuf::from(path),
+            workspace_dir: PathBuf::from("/nonexistent-workspace"),
+            modified: false,
+            failed: AtomicBool::new(false),
+        }
+    }
+
+    /// Builds an in-memory Cargo.toml lintable that keeps its raw text, like
+    /// one read from disk.
+    pub(super) fn manifest(path: &str, raw: &str, fix: bool) -> Lintable<DocumentMut> {
+        let mut manifest = lintable(path, raw.parse().unwrap(), fix);
+        manifest.raw = Some(raw.to_owned());
+        manifest
+    }
+
+    pub(super) fn failed<T>(lintable: &Lintable<T>) -> bool {
+        lintable.failed.load(Ordering::Relaxed)
+    }
+}

@@ -230,3 +230,89 @@ impl Copyright {
         });
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::super::test_support::failed;
+    use super::super::test_support::lintable;
+    use super::*;
+
+    const RS: &str =
+        "// Copyright (c) Microsoft Corporation.\n// Licensed under the MIT License.\n\n";
+    const PY: &str =
+        "# Copyright (c) Microsoft Corporation.\n# Licensed under the MIT License.\n\n";
+
+    fn fix(ext: &str, text: &str) -> (String, bool) {
+        let mut file = lintable("f", text.to_owned(), true);
+        Copyright {
+            is_msft_internal: false,
+        }
+        .check(&mut file, ext);
+        (file.content.clone(), file.modified)
+    }
+
+    // Test: Fix Rust, Python, CSS and HTML files lacking a header, and a Rust
+    //       file whose header lacks the following blank line.
+    // Expected: Each gets the exact two-line header with its comment syntax and
+    //       one blank line, while the original code follows unchanged.
+    #[test]
+    fn inserts_exact_header_with_language_delimiters() {
+        assert_eq!(fix("rs", "fn a() {}\n").0, format!("{RS}fn a() {{}}\n"));
+        assert_eq!(fix("py", "print()\n").0, format!("{PY}print()\n"));
+        assert_eq!(
+            fix("css", "a {}\n").0,
+            "/* Copyright (c) Microsoft Corporation. */\n/* Licensed under the MIT License. */\n\na {}\n"
+        );
+        assert_eq!(
+            fix("html", "<p/>\n").0,
+            "<!-- Copyright (c) Microsoft Corporation. -->\n<!-- Licensed under the MIT License. -->\n\n<p/>\n"
+        );
+        let tight = "// Copyright (c) Microsoft Corporation.\n// Licensed under the MIT License.\nfn a() {}\n";
+        assert_eq!(fix("rs", tight).0, format!("{RS}fn a() {{}}\n"));
+    }
+
+    // Test: Check correctly headed files, a non-Microsoft copyright, a script
+    //       shebang and HTML doctype with and without a following blank line.
+    // Expected: Correct and third-party files stay untouched; a special first
+    //       line is kept and separated from the header by exactly one blank line.
+    #[test]
+    fn preserves_valid_third_party_and_special_first_lines() {
+        assert_eq!(fix("rs", &format!("{RS}fn a() {{}}\n")).1, false);
+        let other = "// Copyright (c) Contoso.\n// Apache-2.0\nfn a() {}\n";
+        assert_eq!(fix("rs", other), (other.to_owned(), false));
+
+        let shebang_ok = format!("#!/usr/bin/env python3\n\n{PY}print()\n");
+        assert_eq!(fix("py", &shebang_ok).1, false);
+        let shebang_tight = format!("#!/usr/bin/env python3\n{PY}print()\n");
+        assert_eq!(fix("py", &shebang_tight).0, shebang_ok);
+        let doctype = "<!DOCTYPE html>\n<p/>\n";
+        assert_eq!(
+            fix("html", doctype).0,
+            "<!DOCTYPE html>\n\n<!-- Copyright (c) Microsoft Corporation. -->\n<!-- Licensed under the MIT License. -->\n\n<p/>\n"
+        );
+    }
+
+    // Test: Fix a Rust file starting with `#!`, a file starting with a BOM with
+    //       and without a header, then check a headerless file in check mode.
+    // Expected: Rust shebang-like lines are not treated as special, a BOM stays
+    //       first exactly once, and check mode reports failure without editing
+    //       the file.
+    #[test]
+    fn handles_rust_shebang_bom_and_check_mode() {
+        assert_eq!(fix("rs", "#![no_std]\n").0, format!("{RS}#![no_std]\n"));
+        assert_eq!(
+            fix("rs", "\u{feff}fn a() {}\n").0,
+            format!("\u{feff}{RS}fn a() {{}}\n")
+        );
+        let bom_tight = "\u{feff}// Copyright (c) Microsoft Corporation.\n// Licensed under the MIT License.\nfn a() {}\n";
+        assert_eq!(fix("rs", bom_tight).0, format!("\u{feff}{RS}fn a() {{}}\n"));
+
+        let mut file = lintable("f.rs", "fn a() {}\n".to_owned(), false);
+        Copyright {
+            is_msft_internal: false,
+        }
+        .check(&mut file, "rs");
+        assert!(failed(&file));
+        assert_eq!(file.content.as_str(), "fn a() {}\n");
+    }
+}
