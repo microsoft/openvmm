@@ -32,4 +32,3 @@ allowed_pci_devices = ["nvidia-gpu"]
 vpci_relay = "must_be_on"
 # SIVM hosts don't support TDISP yet, so allow devices without TDISP attestation.
 allow_unattested_devices = true
-allow_shared_bars = true

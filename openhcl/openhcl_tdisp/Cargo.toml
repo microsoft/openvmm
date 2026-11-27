@@ -27,5 +27,8 @@ hcl.workspace = true
 sev_guest_device.workspace = true
 tracelimit.workspace = true
 
+[dev-dependencies]
+pal_async.workspace = true
+
 [lints]
 workspace = true

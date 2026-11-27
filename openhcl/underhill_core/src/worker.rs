@@ -3628,7 +3628,6 @@ async fn new_underhill_vm(
                         test_tdisp_flow,
                         allow_unattested_devices: measured_product_policy
                             .allow_unattested_devices(),
-                        allow_shared_bars: measured_product_policy.allow_shared_bars(),
                     },
                 );
 

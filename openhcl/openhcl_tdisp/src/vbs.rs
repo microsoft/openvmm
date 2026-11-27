@@ -25,9 +25,8 @@ use tdisp::devicereport::TdiReportStruct;
 /// unused.
 ///
 /// VTL0 also can't reach the device's BARs until VTL2 accepts them, each time
-/// the host maps them. Unblocking MMIO accepts a BAR private, and the shared
-/// BARs are accepted shared. Device MMIO can't be unaccepted, so blocking MMIO
-/// does nothing.
+/// the host maps them. VBS can't make device MMIO private, so BARs are only
+/// accepted shared and unblocking MMIO fails. The other operations do nothing.
 pub struct TdispVbsResourceValidator {
     hvcall: MshvHvcall,
     logical_device_id: u64,
@@ -38,7 +37,7 @@ impl TdispVbsResourceValidator {
     /// Creates a validator for the device on the VPCI bus with `instance_id`.
     /// The guest chooses the BAR addresses, so only BARs inside `vtl0_mmio`
     /// are accepted.
-    pub fn new(instance_id: Guid, vtl0_mmio: Vec<MemoryRange>) -> anyhow::Result<Self> {
+    pub fn new(instance_id: Guid, vtl0_mmio: &[MemoryRange]) -> anyhow::Result<Self> {
         let hvcall = MshvHvcall::new().context("failed to open mshv_hvcall device")?;
         hvcall.set_allowed_hypercalls(&[
             hvdef::HypercallCode::HvCallVbsVmCallAuthorizeDeviceIo,
@@ -47,41 +46,8 @@ impl TdispVbsResourceValidator {
         Ok(Self {
             hvcall,
             logical_device_id: logical_device_id(&instance_id),
-            vtl0_mmio,
+            vtl0_mmio: vtl0_mmio.to_vec(),
         })
-    }
-
-    /// Accepts the BAR `bar_id` that the guest mapped at `base_gpa` with
-    /// `visibility`.
-    fn accept_bar(
-        &self,
-        bar_id: u16,
-        base_gpa: u64,
-        length_in_bytes: u64,
-        visibility: HostVisibilityType,
-    ) -> anyhow::Result<()> {
-        let inside = base_gpa.checked_add(length_in_bytes).is_some_and(|end| {
-            self.vtl0_mmio
-                .iter()
-                .any(|r| r.start() <= base_gpa && end <= r.end())
-        });
-        if !inside {
-            anyhow::bail!(
-                "BAR {bar_id} at {base_gpa:#x} with length {length_in_bytes:#x} is outside VTL0 MMIO"
-            );
-        }
-        let range = MemoryRange::bounding(base_gpa..base_gpa + length_in_bytes);
-        let skipped = accept_mapped_pages(&self.hvcall, range, visibility)
-            .with_context(|| format!("failed to accept BAR {bar_id} at {range}"))?;
-        let skipped = skipped.iter().map(|r| r.to_string()).collect::<Vec<_>>();
-        tracing::info!(
-            bar_id,
-            %range,
-            ?visibility,
-            skipped = %skipped.join(", "),
-            "accepted device BAR"
-        );
-        Ok(())
     }
 
     /// Authorizes the device's DMA, or unauthorizes it if `authorize` is false.
@@ -108,14 +74,12 @@ fn logical_device_id(instance_id: &Guid) -> u64 {
     u64::from(instance_id.data2) << 16 | u64::from(instance_id.data3 & 0xfff8)
 }
 
-/// Accepts the pages of `range` that the host maps with `visibility`, and
-/// returns the ones it doesn't. The host emulates those, so they stay
-/// unaccepted: VTL0 accesses to them trap to VTL2, which forwards them to the
-/// host.
+/// Accepts the pages of `range` that the host maps, shared, and returns the
+/// ones it doesn't. The host emulates those, so they stay unaccepted: VTL0
+/// accesses to them trap to VTL2, which forwards them to the host.
 fn accept_mapped_pages(
     hvcall: &MshvHvcall,
     range: MemoryRange,
-    visibility: HostVisibilityType,
 ) -> Result<Vec<MemoryRange>, AcceptPagesError> {
     let mut skipped = Vec::<MemoryRange>::new();
     let mut start = range.start();
@@ -123,7 +87,7 @@ fn accept_mapped_pages(
         match hvcall.accept_gpa_pages(
             MemoryRange::new(start..range.end()),
             hvdef::hypercall::AcceptMemoryType::ANY,
-            visibility,
+            HostVisibilityType::SHARED,
         ) {
             Ok(()) => break,
             Err(AcceptPagesError::Hypervisor {
@@ -174,19 +138,12 @@ impl TdispResourceValidationInterface for TdispVbsResourceValidator {
         &'a self,
         _target_vtl: Vtl,
         _device_id: u16,
-        base_gpa: u64,
+        _base_gpa: u64,
         _base_offset: u32,
-        length_in_bytes: u64,
+        _length_in_bytes: u64,
         range_id: u16,
     ) -> Pin<Box<dyn Future<Output = anyhow::Result<()>> + Send + Sync + 'a>> {
-        Box::pin(async move {
-            self.accept_bar(
-                range_id,
-                base_gpa,
-                length_in_bytes,
-                HostVisibilityType::PRIVATE,
-            )
-        })
+        Box::pin(async move { anyhow::bail!("VBS can't make BAR {range_id} private") })
     }
 
     fn tdisp_accept_shared_mmio(
@@ -196,12 +153,25 @@ impl TdispResourceValidationInterface for TdispVbsResourceValidator {
         length_in_bytes: u64,
         range_id: u16,
     ) -> anyhow::Result<()> {
-        self.accept_bar(
-            range_id,
-            base_gpa,
-            length_in_bytes,
-            HostVisibilityType::SHARED,
-        )
+        // Checking the range against VTL0 MMIO also keeps `bounding` from panicking.
+        let end = base_gpa.saturating_add(length_in_bytes);
+        anyhow::ensure!(
+            self.vtl0_mmio
+                .iter()
+                .any(|r| r.start() <= base_gpa && end <= r.end()),
+            "BAR {range_id} at {base_gpa:#x} with length {length_in_bytes:#x} is outside VTL0 MMIO"
+        );
+        let range = MemoryRange::bounding(base_gpa..end);
+        let skipped = accept_mapped_pages(&self.hvcall, range)
+            .with_context(|| format!("failed to accept BAR {range_id} at {range}"))?;
+        let skipped = skipped.iter().map(|r| r.to_string()).collect::<Vec<_>>();
+        tracing::info!(
+            bar_id = range_id,
+            %range,
+            skipped = %skipped.join(", "),
+            "accepted device BAR"
+        );
+        Ok(())
     }
 
     fn tdisp_unblock_dma(&self, _target_vtl: Vtl, _device_id: u16) -> anyhow::Result<()> {

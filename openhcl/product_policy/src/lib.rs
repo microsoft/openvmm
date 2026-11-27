@@ -141,10 +141,6 @@ pub struct VpciRelayPolicy {
     /// Allow devices without TDISP attestation.
     #[mesh(3)]
     pub allow_unattested_devices: bool,
-    /// Allow the BARs of devices without TDISP attestation to stay shared with
-    /// the host.
-    #[mesh(4)]
-    pub allow_shared_bars: bool,
 }
 
 /// One product's table in the manifest: the product's fields plus an optional
@@ -274,13 +270,6 @@ macro_rules! define_product_policy {
             pub fn allow_unattested_devices(&self) -> bool {
                 self.vpci_relay_policy()
                     .is_some_and(|r| r.allow_unattested_devices)
-            }
-
-            /// Whether the BARs of devices without TDISP attestation may stay
-            /// shared with the host.
-            pub fn allow_shared_bars(&self) -> bool {
-                self.vpci_relay_policy()
-                    .is_some_and(|r| r.allow_shared_bars)
             }
         }
 

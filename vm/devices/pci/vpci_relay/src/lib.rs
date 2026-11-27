@@ -95,8 +95,6 @@ pub struct VpciRelayOptions {
     /// steps that need it, including the check for a VPCI protocol that carries
     /// TDISP.
     pub allow_unattested_devices: bool,
-    /// Keep the BARs of devices without TDISP attestation shared with the host.
-    pub allow_shared_bars: bool,
 }
 
 /// Virtual PCI relay.
@@ -459,7 +457,6 @@ impl VpciRelay {
                 self.isolation_type,
                 hvdef::Vtl::Vtl0,
                 self.options.allow_unattested_devices,
-                self.options.allow_shared_bars,
             )
             .await
             .context("failed to initialize vpci device")?;

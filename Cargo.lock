@@ -5813,6 +5813,7 @@ dependencies = [
  "hvdef",
  "inspect",
  "memory_range",
+ "pal_async",
  "parking_lot",
  "sev_guest_device",
  "tdisp",

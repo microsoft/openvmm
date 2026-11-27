@@ -76,7 +76,6 @@ fn load_device_policy(
             .collect::<anyhow::Result<_>>()?,
         mode: device_policy.vpci_relay.unwrap_or_default(),
         allow_unattested_devices: device_policy.allow_unattested_devices,
-        allow_shared_bars: device_policy.allow_shared_bars,
     });
     Ok(())
 }
@@ -173,7 +172,7 @@ mod tests {
     /// Azure policies must allow the same devices OpenHCL allowed before
     /// device policies existed, the SIVM policy only the GPU; only CVMs run
     /// the relay by default, and only SIVMs require it. Only SIVMs allow
-    /// devices without TDISP attestation, and keep their BARs shared.
+    /// devices without TDISP attestation.
     #[test]
     fn device_policy_round_trips_through_initrd() {
         let manifests = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../manifests");
@@ -195,7 +194,7 @@ mod tests {
             ..Default::default()
         };
         let azure = vec![class(1, 8, 2), microsoft(0xba, 2), microsoft(0xc003, 0x10)];
-        for (file, devices, mode, unattested_with_shared_bars) in [
+        for (file, devices, mode, allow_unattested_devices) in [
             (
                 "openhcl-x64-cvm-release.toml",
                 azure.clone(),
@@ -237,8 +236,7 @@ mod tests {
                 expected.set_vpci_relay(product_policy::VpciRelayPolicy {
                     allowed_pci_devices: devices.clone(),
                     mode,
-                    allow_unattested_devices: unattested_with_shared_bars,
-                    allow_shared_bars: unattested_with_shared_bars,
+                    allow_unattested_devices,
                 });
                 assert_eq!(*bytes, product_policy::encode_product_policy(&expected));
                 assert_eq!(
@@ -260,7 +258,6 @@ mod tests {
             allowed_pci_devices: vec!["*".into()],
             vpci_relay: None,
             allow_unattested_devices: false,
-            allow_shared_bars: false,
         };
         let mut policy = ProductPolicy::Azure(Default::default());
         load_device_policy(&device_policy, &mut policy).unwrap();
@@ -293,7 +290,6 @@ mod tests {
                 allowed_pci_devices: vec![name.into()],
                 vpci_relay: Some(VpciRelayMode::MustBeOn),
                 allow_unattested_devices: false,
-                allow_shared_bars: false,
             };
             let mut initrd = vec![1, 2, 3];
             let error = append(

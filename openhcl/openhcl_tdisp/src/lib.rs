@@ -280,7 +280,7 @@ pub fn new_resource_validator(
         #[cfg(target_os = "linux")]
         IsolationType::Vbs => Ok(Arc::new(TdispVbsResourceValidator::new(
             instance_id,
-            vtl0_mmio.to_vec(),
+            vtl0_mmio,
         )?)),
 
         // Isolation types with no validator of their own, or running in an

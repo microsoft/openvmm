@@ -206,10 +206,6 @@ pub struct DevicePolicyConfig {
     /// Allow devices without TDISP attestation. Defaults to false when omitted.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub allow_unattested_devices: bool,
-    /// Allow the BARs of devices without TDISP attestation to stay shared with
-    /// the host. Defaults to false when omitted.
-    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
-    pub allow_shared_bars: bool,
 }
 
 impl Image {

@@ -87,11 +87,8 @@ confidential debugging. Otherwise only the measured command line sets it.
 with TDISP, for hosts that don't support it. It defaults to `false`; only the
 SIVM policy sets it, as a temporary solution until TDISP support comes online
 for SIVMs. With it set, OpenHCL sends the host no TDISP command and checks no
-TDI report, so nothing attests the device's identity or configuration.
-
-`allow_shared_bars` keeps the BARs of those devices shared with the host, which
-can then still access them, for hosts that can't make device MMIO private. It
-defaults to `false`; only the SIVM policy sets it.
+TDI report, so nothing attests the device's identity or configuration, and
+the device's BARs stay shared with the host.
 
 The catalog defines each device once, with any of `vendor_id`, `device_id`,
 `revision_id`, `base_class`, `sub_class`, and `prog_if`. A field that is left

@@ -81,8 +81,6 @@ impl TdispClient {
     /// * `bar_masks` - Which BARs the device implements.
     /// * `allow_unattested_devices` - Measured policy temporarily allowing VBS
     ///   devices without TDISP attestation. Must be false for SNP and TDX.
-    /// * `allow_shared_bars` - Keep the BARs of a device without TDISP
-    ///   attestation shared with the host.
     pub fn new(
         transport: Box<dyn TdispCommandTransport>,
         resource_validator: Arc<dyn TdispResourceValidationInterface>,
@@ -90,7 +88,6 @@ impl TdispClient {
         target_vtl: Vtl,
         bar_masks: [bool; 6],
         allow_unattested_devices: bool,
-        allow_shared_bars: bool,
     ) -> Self {
         Self(futures::lock::Mutex::new(TdispClientState::new(
             transport,
@@ -99,7 +96,6 @@ impl TdispClient {
             target_vtl,
             bar_masks,
             allow_unattested_devices,
-            allow_shared_bars,
         )))
     }
 
@@ -194,7 +190,8 @@ impl TdispClient {
 
     /// Classify BAR and DMA isolation for this device as it stands right now.
     ///
-    /// Returns `NotReady` if no TDI interface report is cached.
+    /// Returns `NotReady` if the device needs a TDI interface report and none
+    /// is cached.
     pub async fn isolation_snapshot(&self) -> TdispIsolationReport {
         self.0.lock().await.isolation_snapshot()
     }
@@ -341,9 +338,6 @@ struct TdispClientState {
     /// Temporary measured policy for unattested VBS devices; false for SNP/TDX.
     /// Remove this flag and its bypass helpers when VBS supports TDISP.
     allow_unattested_devices: bool,
-    /// Keep the BARs of a device without TDISP attestation shared with the
-    /// host.
-    allow_shared_bars: bool,
 }
 
 impl TdispClientState {
@@ -354,7 +348,6 @@ impl TdispClientState {
         target_vtl: Vtl,
         bar_masks: [bool; 6],
         allow_unattested_devices: bool,
-        allow_shared_bars: bool,
     ) -> Self {
         if matches!(isolation_type, IsolationType::Snp | IsolationType::Tdx) {
             assert!(
@@ -378,7 +371,6 @@ impl TdispClientState {
             bar_masks,
             resource_validator,
             allow_unattested_devices,
-            allow_shared_bars,
         }
     }
 
@@ -783,7 +775,7 @@ impl TdispClientState {
     async fn unbind(&mut self, reason: TdispGuestUnbindReason) {
         if self.allow_unattested_devices {
             // Nothing was bound on the host, and DMA stays unblocked. The host
-            // unmaps the BARs, so they're unblocked again on the next
+            // unmaps the BARs, so they're accepted again on the next
             // activation.
             self.mutable_state.validated_mmio_bars.clear();
             return;
@@ -1013,7 +1005,7 @@ impl TdispClientState {
     /// Temporary VBS preparation without host bind/start commands or a report.
     /// Synthetic TDI states preserve the existing MMIO activation contract;
     /// they do not mean that the device has been attested. DMA remains blocked
-    /// until on_mmio_reconfigured unblocks the first BAR.
+    /// until on_mmio_reconfigured calls unblock_unattested_dma.
     fn prepare_unattested_device(
         &mut self,
         interface_info: TdispDeviceInterfaceInfo,
@@ -1233,29 +1225,19 @@ impl TdispClientState {
             return TdispResourceIsolation::Shared;
         }
 
-        // Without a TDI report, every other BAR the device implements is
-        // private, unless the policy keeps them shared.
-        if self.allow_unattested_devices {
-            return if !self.bar_masks[usize::from(bar_id)] {
-                TdispResourceIsolation::Invalid
-            } else if self.allow_shared_bars {
-                TdispResourceIsolation::Shared
-            } else {
-                TdispResourceIsolation::Private
-            };
-        }
-
         // No cached report yet (attestation hasn't run) → we don't know
-        // if this BAR is claimed at all, so INVALID rather than SHARED.
-        let Some(report) = self.mutable_state.tdi_report.as_ref() else {
+        // if this BAR is claimed at all, so INVALID rather than SHARED. An
+        // unattested device never has a report, so none of its BARs are listed.
+        let report = self.mutable_state.tdi_report.as_ref();
+        if report.is_none() && !self.allow_unattested_devices {
             return TdispResourceIsolation::Invalid;
-        };
+        }
 
         // Match range_id to BAR index and only report BARs that were physically
         // probed on the device.
         let Some(range) = report
-            .mmio_interface_info
-            .iter()
+            .into_iter()
+            .flat_map(|report| &report.mmio_interface_info)
             .find(|r| r.range_id == bar_id)
         else {
             return if self.bar_masks[usize::from(bar_id)] {
@@ -1277,11 +1259,11 @@ impl TdispClientState {
     /// Classify BAR and DMA isolation for this device at this instant in the
     /// flow.
     ///
-    /// Returns `NotReady` iff no TDI interface report is currently cached.
-    /// Callers that need a classification from an unattested device have to
-    /// attest it first.
+    /// Returns `NotReady` iff no TDI interface report is currently cached, so
+    /// callers have to attest the device first. A policy-allowed unattested
+    /// device never has a report, so it's always ready.
     fn isolation_snapshot(&self) -> TdispIsolationReport {
-        if self.mutable_state.tdi_report.is_none() {
+        if self.mutable_state.tdi_report.is_none() && !self.allow_unattested_devices {
             return TdispIsolationReport::NotReady;
         }
 
@@ -1305,12 +1287,12 @@ impl TdispClientState {
     }
 
     /// Called when a BAR MMIO range is reconfigured by the guest, to make the
-    /// range accessible to the guest if it is private memory.
+    /// range accessible to the guest.
     ///
     /// Only ranges the device reports as TEE memory are unblocked. Ranges the
     /// device reports as non-TEE memory, BARs the paravisor has marked
     /// intercepted, and BARs the device implements but the report does not list
-    /// are all skipped.
+    /// stay shared, and are only accepted as shared memory.
     ///
     /// Note: We have chosen to only allow MMIO reconfiguration only after the
     /// Run state is reached. This is an implementation decision.
@@ -1390,8 +1372,8 @@ impl TdispClientState {
                         isolation: TdispResourceIsolation::Shared,
                     },
                 );
-                // With every BAR shared, no private BAR unblocks DMA below.
-                if self.allow_shared_bars {
+                // An unattested device has no private BAR to unblock DMA below.
+                if self.allow_unattested_devices {
                     self.unblock_unattested_dma()?;
                 }
                 return Ok(());
@@ -1423,11 +1405,9 @@ impl TdispClientState {
 
         // Tell the host before the platform unblocks. Depending on the platform, the host
         // may need to perform bookkeeping operations before the guest can unblock the range.
-        if !self.allow_unattested_devices {
-            self.host_unblock_mmio_range(bar_id, base_address, length)
-                .await
-                .context("tdisp_on_mmio_reconfigured: failed to unblock MMIO on the host")?;
-        }
+        self.host_unblock_mmio_range(bar_id, base_address, length)
+            .await
+            .context("tdisp_on_mmio_reconfigured: failed to unblock MMIO on the host")?;
 
         self.resource_validator
             .tdisp_unblock_mmio(self.target_vtl, device_id, base_address, 0, length, bar_id)
@@ -1469,9 +1449,9 @@ impl TdispClientState {
         Ok(())
     }
 
-    /// Temporary DMA authorization for an unattested device whose BARs are all
-    /// shared, so no private BAR unblocks DMA. Authorization persists across
-    /// unbind; a failed authorization can retry.
+    /// Temporary DMA authorization for an unattested device, whose BARs are all
+    /// shared. Authorization persists across unbind; a failed authorization can
+    /// retry.
     fn unblock_unattested_dma(&mut self) -> anyhow::Result<()> {
         if !self.mutable_state.dma_unblocked {
             let device_id = self
@@ -1492,6 +1472,8 @@ impl TdispClientState {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::noop::AcceptedSharedMmioRange;
+    use pal_async::async_test;
 
     use tdisp::devicereport::TdispTdiReportInterfaceInfo;
     use tdisp::devicereport::TdispTdiReportMmioFlags;
@@ -1531,7 +1513,6 @@ mod tests {
             IsolationType::None,
             Vtl::Vtl0,
             present_bars,
-            false,
             false,
         )
     }
@@ -1740,7 +1721,6 @@ mod tests {
                     Vtl::Vtl0,
                     [false; 6],
                     true,
-                    false,
                 )
             });
             assert!(
@@ -1755,7 +1735,6 @@ mod tests {
                 Vtl::Vtl0,
                 [false; 6],
                 false,
-                false,
             );
 
             assert!(!state.allow_unattested_devices);
@@ -1765,8 +1744,7 @@ mod tests {
     }
 
     /// With the host checks bypassed, attestation sends the host no TDISP
-    /// command, and DMA is unblocked and stays unblocked across an unbind. The
-    /// BAR is unblocked again after the unbind, as the host remaps it.
+    /// command, and DMA is unblocked and stays unblocked across an unbind.
     #[test]
     fn bypassed_host_checks_unblock_dma_without_the_host() {
         let validator = Arc::new(crate::noop::TdispNoopResourceValidator::new());
@@ -1777,7 +1755,6 @@ mod tests {
             Vtl::Vtl0,
             [true, true, false, false, false, false],
             true,
-            false,
         );
         futures::executor::block_on(async {
             let info = state.query_capabilities().await.unwrap();
@@ -1796,37 +1773,12 @@ mod tests {
                 .await
                 .unwrap();
             assert!(validator.dma_unblocked());
-            assert_eq!(validator.unblocked_mmio_ranges().len(), 1);
+            assert!(validator.unblocked_mmio_ranges().is_empty());
             state.unbind(TdispGuestUnbindReason::Graceful).await;
             assert!(validator.dma_unblocked());
             assert_eq!(state.tdi_state(), TdispTdiState::Run);
             state
-                .on_mmio_reconfigured(0, 0x1000_0000, 0x1000)
-                .await
-                .unwrap();
-            assert_eq!(validator.unblocked_mmio_ranges().len(), 2);
-        });
-    }
-
-    /// With shared BARs allowed, nothing is unblocked as private, and DMA is
-    /// unblocked after the first BAR instead.
-    #[test]
-    fn shared_bars_unblock_dma_without_private_mmio() {
-        let validator = Arc::new(crate::noop::TdispNoopResourceValidator::new());
-        let mut state = TdispClientState::new(
-            Box::new(PanickingTransport),
-            validator.clone(),
-            IsolationType::Vbs,
-            Vtl::Vtl0,
-            [true, true, false, false, false, false],
-            true,
-            true,
-        );
-        futures::executor::block_on(async {
-            let info = state.query_capabilities().await.unwrap();
-            state.attest(info).await.unwrap();
-            state
-                .on_mmio_reconfigured(0, 0x1000_0000, 0x1000)
+                .on_mmio_reconfigured(1, 0x2000_0000, 0x1000)
                 .await
                 .unwrap();
             assert!(validator.dma_unblocked());
@@ -1923,9 +1875,8 @@ mod tests {
         }
     }
 
-    /// A failed DMA authorization for an unattested device with shared BARs
-    /// leaves DMA blocked, so the next activation, after the no-op unbind, tries
-    /// again.
+    /// A failed DMA authorization for an unattested device leaves DMA blocked,
+    /// so the next activation, after the no-op unbind, tries again.
     #[test]
     fn unattested_dma_authorization_retries_after_failure() {
         let validator = Arc::new(FailFirstDmaUnblock {
@@ -1938,7 +1889,6 @@ mod tests {
             IsolationType::Vbs,
             Vtl::Vtl0,
             [true, false, false, false, false, false],
-            true,
             true,
         );
         futures::executor::block_on(async {
@@ -1969,5 +1919,75 @@ mod tests {
                 2
             );
         });
+    }
+
+    /// An unattested device's BARs are accepted shared where the guest mapped
+    /// them, and accepted again after the no-op unbind, as the host remaps
+    /// them.
+    #[async_test]
+    async fn unattested_device_bars_are_accepted_shared() {
+        let validator = Arc::new(crate::noop::TdispNoopResourceValidator::new());
+        let mut state = TdispClientState::new(
+            Box::new(PanickingTransport),
+            validator.clone(),
+            IsolationType::Vbs,
+            Vtl::Vtl0,
+            [true, true, false, false, false, false],
+            true,
+        );
+        let info = state.query_capabilities().await.unwrap();
+        state.attest(info).await.unwrap();
+        state
+            .on_mmio_reconfigured(0, 0x1000_0000, 0x1000)
+            .await
+            .unwrap();
+        state
+            .on_mmio_reconfigured(1, 0x2000_0000, 0x1000)
+            .await
+            .unwrap();
+        state.unbind(TdispGuestUnbindReason::Graceful).await;
+        state
+            .on_mmio_reconfigured(0, 0x3000_0000, 0x1000)
+            .await
+            .unwrap();
+
+        let shared = |range_id, base_gpa| AcceptedSharedMmioRange {
+            target_vtl: Vtl::Vtl0,
+            base_gpa,
+            length_in_bytes: 0x1000,
+            range_id,
+        };
+        assert_eq!(
+            validator.accepted_shared_mmio_ranges(),
+            [
+                shared(0, 0x1000_0000),
+                shared(1, 0x2000_0000),
+                shared(0, 0x3000_0000)
+            ]
+        );
+    }
+
+    /// The guest can query an unattested device's isolation, although it has no
+    /// TDI report: the BARs it implements and its DMA are reported shared,
+    /// matching how they're accepted.
+    #[async_test]
+    async fn unattested_device_isolation_is_shared() {
+        use TdispResourceIsolation::Invalid;
+        use TdispResourceIsolation::Shared;
+
+        let client = TdispClient::new(
+            Box::new(PanickingTransport),
+            Arc::new(crate::noop::TdispNoopResourceValidator::new()),
+            IsolationType::Vbs,
+            Vtl::Vtl0,
+            [true, true, false, false, false, false],
+            true,
+        );
+        let report = client.isolation_snapshot_attested().await;
+        let TdispIsolationReport::Ready { bars, dma } = report else {
+            panic!("expected a ready report, got {report:?}");
+        };
+        assert_eq!(bars, [Shared, Shared, Invalid, Invalid, Invalid, Invalid]);
+        assert_eq!(dma, Shared);
     }
 }
