@@ -24,6 +24,7 @@ vmcore.workspace = true
 anyhow.workspace = true
 async-trait.workspace = true
 futures.workspace = true
+parking_lot.workspace = true
 unicycle.workspace = true
 zerocopy.workspace = true
 
@@ -31,6 +32,8 @@ zerocopy.workspace = true
 async-channel.workspace = true
 chipset_device.workspace = true
 disk_hook.workspace = true
+disklayer_ram.workspace = true
+inspect = { workspace = true, features = ["initiate"] }
 pal_async.workspace = true
 pal_event.workspace = true
 pci_core.workspace = true

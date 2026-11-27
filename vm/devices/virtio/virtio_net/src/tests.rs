@@ -39,6 +39,7 @@ use virtio::VirtioDevice;
 use virtio::queue::QueueParams;
 use virtio::spec::VirtioDeviceFeatures;
 use virtio::spec::queue::DescriptorFlags;
+use virtio::test_helpers::ConfigInterrupt;
 use virtio::test_helpers::init_avail_ring;
 use virtio::test_helpers::init_used_ring;
 use virtio::test_helpers::make_available;
@@ -1561,6 +1562,19 @@ async fn rx_offload_policy_survives_queue_recreation(driver: DefaultDriver) {
     assert!(!recreated.tcpv6_gso);
 }
 
+#[async_test]
+async fn endpoint_link_status_updates_config(driver: DefaultDriver) {
+    let mut harness = TestHarness::new(&driver);
+    let _queue = harness.enable_and_get_handle().await;
+    let mut config = ConfigInterrupt::new(&driver, harness.device).await;
+    for (link_up, expected) in [(false, 0), (true, 1)] {
+        harness
+            .endpoint_action_tx
+            .send(EndpointAction::LinkStatusNotify(link_up));
+        assert_eq!(config.next(4).await >> 16, expected);
+    }
+}
+
 // --- TX Offload Parsing Tests ---
 
 use net_backend::TxFlags;
@@ -2380,9 +2394,10 @@ async fn feature_negotiation_with_offloads_and_rx_gso(driver: DefaultDriver) {
         bank1.host_uso(),
         "HOST_USO should be set when uso+udp offloads supported"
     );
-    assert_eq!(device.registers.mtu, 1500);
-    assert_eq!(device.registers.speed, 10_000);
-    assert_eq!(device.registers.duplex, 0xff);
+    let registers = device.registers.lock();
+    assert_eq!(registers.mtu, 1500);
+    assert_eq!(registers.speed, 10_000);
+    assert_eq!(registers.duplex, 0xff);
 }
 
 /// Receive GSO is opt-in until virtio-net supports mergeable receive buffers.
@@ -2516,12 +2531,14 @@ async fn link_speed_boundaries(driver: DefaultDriver) {
     assert_eq!(
         build_device(max_valid_speed * BITS_PER_MEGABIT)
             .registers
+            .lock()
             .speed,
         max_valid_speed as u32
     );
     assert_eq!(
         build_device((max_valid_speed + 1) * BITS_PER_MEGABIT)
             .registers
+            .lock()
             .speed,
         u32::MAX
     );

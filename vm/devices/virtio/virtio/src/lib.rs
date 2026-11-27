@@ -7,6 +7,7 @@
 #![expect(missing_docs)]
 
 mod common;
+mod config;
 pub mod device;
 pub mod in_order;
 pub mod queue;
@@ -18,6 +19,7 @@ mod tests;
 pub mod transport;
 
 pub use common::*;
+pub use config::ConfigGeneration;
 pub use device::DynVirtioDevice;
 pub use device::VirtioDevice;
 pub use transport::*;

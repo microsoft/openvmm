@@ -9,6 +9,7 @@ use super::task::StartParams;
 use super::task::TransportState;
 use super::task::TransportStateResult;
 use super::task::run_device_task;
+use crate::ConfigGeneration;
 use crate::DynVirtioDevice;
 use crate::QueueResources;
 use crate::VirtioDoorbells;
@@ -89,7 +90,8 @@ pub(crate) struct VirtioTransportCore {
     pub device_status: VirtioDeviceStatus,
     #[inspect(skip)]
     pub poll_waker: Option<std::task::Waker>,
-    pub config_generation: u32,
+    pub config_generation: ConfigGeneration,
+    pub supports_runtime_config_updates: bool,
     #[inspect(skip)]
     pub doorbells: VirtioDoorbells,
     pub supports_save_restore: bool,
@@ -135,6 +137,8 @@ impl VirtioTransportCore {
             .with_version_1(true)
             .with_access_platform(true);
         let supports_save_restore = device.supports_save_restore();
+        let config_generation = device.config_generation_handle();
+        let supports_runtime_config_updates = config_generation.is_some();
 
         let (sender, receiver) = mesh::channel();
         let device_task = driver.spawn("virtio-device-task", async move {
@@ -153,7 +157,8 @@ impl VirtioTransportCore {
             queues,
             device_status: VirtioDeviceStatus::new(),
             poll_waker: None,
-            config_generation: 0,
+            config_generation: config_generation.unwrap_or_default(),
+            supports_runtime_config_updates,
             doorbells: VirtioDoorbells::new(doorbell_registration),
             supports_save_restore,
             guest_memory,
@@ -162,10 +167,8 @@ impl VirtioTransportCore {
         })
     }
 
-    /// Bump config_generation and signal a config-change interrupt if
-    /// the device is in DRIVER_OK state.
-    pub fn update_config_generation(&mut self, ops: &mut dyn TransportOps) {
-        self.config_generation = self.config_generation.wrapping_add(1);
+    fn update_config_generation(&mut self, ops: &mut dyn TransportOps) {
+        self.config_generation.bump_generation();
         if self.device_status.driver_ok() {
             ops.signal_config_change();
         }
@@ -196,6 +199,7 @@ impl VirtioTransportCore {
             device_feature: _,
             supports_save_restore: _,
             guest_memory: _,
+            supports_runtime_config_updates: _,
 
             // Async state machine — not owned by reset_status.
             state: _,
@@ -221,7 +225,7 @@ impl VirtioTransportCore {
 
         doorbells.clear();
         *device_status = VirtioDeviceStatus::new();
-        *config_generation = 0;
+        config_generation.set_status(0, false);
         ops.reset_interrupts();
 
         *device_feature_select = 0;
@@ -360,6 +364,15 @@ impl VirtioTransportCore {
             }
             self.apply_transport_result(ops, result);
         }
+        if self.supports_runtime_config_updates
+            && self.device_status.driver_ok()
+            && !self.state.is_busy()
+            && self.config_generation.poll_change(cx).is_ready()
+        {
+            ops.signal_config_change();
+            // Poll again to rearm the event.
+            cx.waker().wake_by_ref();
+        }
     }
 
     /// `ChangeDeviceState::start()` implementation.
@@ -435,6 +448,7 @@ impl VirtioTransportCore {
             !self.state.is_busy(),
             "device must be stopped before teardown"
         );
+        self.config_generation.clear_notification();
         // Dropping the task handle only schedules cancellation; await backend
         // destruction and task exit before acknowledging device removal.
         self.device_sender
@@ -462,7 +476,7 @@ impl VirtioTransportCore {
             device_feature_select: self.device_feature_select,
             driver_feature_select: self.driver_feature_select,
             queue_select: self.queue_select,
-            config_generation: self.config_generation,
+            config_generation: self.config_generation.generation(),
         })
     }
 
@@ -509,7 +523,6 @@ impl VirtioTransportCore {
             saved_queue_count,
             crate::MAX_QUEUE_SIZE,
         )?;
-
         // Restore feature negotiation.
         self.driver_feature = VirtioDeviceFeatures::new();
         for (i, &bank) in common.driver_feature_banks.iter().enumerate() {
@@ -518,7 +531,13 @@ impl VirtioTransportCore {
         self.device_feature_select = common.device_feature_select;
         self.driver_feature_select = common.driver_feature_select;
         self.queue_select = common.queue_select;
-        self.config_generation = common.config_generation;
+        // Host config can differ on the destination. Make the guest reread it.
+        self.config_generation.set_status(
+            common
+                .config_generation
+                .wrapping_add(u8::from(self.supports_runtime_config_updates)),
+            self.supports_runtime_config_updates,
+        );
 
         // Restore per-queue parameters.
         for (i, (q, msix_vector)) in queue_items.into_iter().enumerate() {
