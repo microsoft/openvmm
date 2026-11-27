@@ -29,17 +29,21 @@ use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
 use std::sync::atomic::Ordering;
 use std::time::Duration;
+use tracing::Instrument;
 use tracing_helpers::AnyhowValueExt;
+use vnc_worker_defs::SynthVideoChannels;
 use vnc_worker_defs::VncParameters;
+use vnc_worker_defs::VncTileSize;
 
 /// A worker for running a VNC server.
 pub struct VncWorker<T: Listener> {
     listener: T,
     view: ViewWrapper,
     input_send: mesh::Sender<InputData>,
-    dirty_recv: Option<mesh::Receiver<Vec<video_core::DirtyRect>>>,
+    synth_video: Option<SynthVideoChannels>,
     max_clients: usize,
     evict_oldest: bool,
+    tile_size: VncTileSize,
 }
 
 impl Worker for VncWorker<TcpListener> {
@@ -90,9 +94,10 @@ impl<T: 'static + Listener + MeshField + Send> VncWorker<T> {
                     .context("failed to map framebuffer")?,
             ),
             input_send: params.input_send,
-            dirty_recv: params.dirty_recv,
+            synth_video: params.synth_video,
             max_clients: params.max_clients,
             evict_oldest: params.evict_oldest,
+            tile_size: params.tile_size,
         })
     }
 
@@ -111,13 +116,14 @@ impl<T: 'static + Listener + MeshField + Send> VncWorker<T> {
                 listener,
                 view: Arc::new(Mutex::new(self.view)),
                 input_send: self.input_send,
-                dirty_recv: self.dirty_recv,
+                synth_video: self.synth_video,
                 dirty_senders: Vec::new(),
                 clients: unicycle::FuturesUnordered::new(),
                 abort_senders: Vec::new(),
                 next_client_id: 0,
                 max_clients: self.max_clients,
                 evict_oldest: self.evict_oldest,
+                tile_size: self.tile_size,
             };
 
             let rpc = loop {
@@ -144,9 +150,10 @@ impl<T: 'static + Listener + MeshField + Send> VncWorker<T> {
                     listener: server.listener.into_inner(),
                     framebuffer: view.0.access(),
                     input_send: server.input_send,
-                    dirty_recv: server.dirty_recv,
+                    synth_video: server.synth_video,
                     max_clients: server.max_clients,
                     evict_oldest: server.evict_oldest,
+                    tile_size: server.tile_size,
                 };
                 rpc.complete(Ok(state));
             }
@@ -156,13 +163,53 @@ impl<T: 'static + Listener + MeshField + Send> VncWorker<T> {
 }
 
 /// Coordinator-side handle for one connected VNC client's dirty-rect broadcast
-/// channel. `try_send` on `sender` is non-blocking; if the channel is full the
-/// coordinator sets `missed_dirty` so the client knows to do a full refresh
-/// once it catches up.
+/// channel. `try_send` is non-blocking; on a full channel the coordinator sets
+/// `missed_dirty` and the client does a full refresh.
 struct ClientDirtySender {
     id: u64,
     sender: async_channel::Sender<Arc<Vec<video_core::DirtyRect>>>,
     missed_dirty: Arc<AtomicBool>,
+}
+
+const MAX_DIRTY_MESSAGES_PER_BATCH: usize = 64;
+const MAX_COALESCED_DIRTY_RECTS: usize = 32768;
+
+struct DirtyBatch {
+    messages: usize,
+    /// None means consumed rectangles were discarded and clients must resync.
+    rects: Option<Vec<video_core::DirtyRect>>,
+}
+
+impl DirtyBatch {
+    fn drain(
+        mut rects: Vec<video_core::DirtyRect>,
+        recv: &mut mesh::Receiver<Vec<video_core::DirtyRect>>,
+    ) -> Self {
+        let mut messages = 1;
+        if rects.len() > MAX_COALESCED_DIRTY_RECTS {
+            return Self {
+                messages,
+                rects: None,
+            };
+        }
+        while messages < MAX_DIRTY_MESSAGES_PER_BATCH && rects.len() < MAX_COALESCED_DIRTY_RECTS {
+            let Ok(next) = recv.try_recv() else {
+                break;
+            };
+            messages += 1;
+            if next.len() > MAX_COALESCED_DIRTY_RECTS - rects.len() {
+                return Self {
+                    messages,
+                    rects: None,
+                };
+            }
+            rects.extend(next);
+        }
+        Self {
+            messages,
+            rects: Some(rects),
+        }
+    }
 }
 
 /// A multi-client VNC server that accepts and manages concurrent connections.
@@ -171,14 +218,13 @@ struct MultiClientServer<T: Listener> {
     /// Shared framebuffer view, protected by a mutex since reads mutate
     /// internal state (channel polling in `resolution()`).
     view: Arc<Mutex<ViewWrapper>>,
-    /// Cloneable input sender -- each client gets its own clone.
+    /// Input sender; each client gets its own clone.
     input_send: mesh::Sender<InputData>,
-    /// Dirty rectangles from the synthetic video device. None if no video
+    /// Channels to the synthetic video device, or `None` if no synth video
     /// device is configured.
-    dirty_recv: Option<mesh::Receiver<Vec<video_core::DirtyRect>>>,
+    synth_video: Option<SynthVideoChannels>,
     /// Per-client dirty rect senders. The coordinator broadcasts device rects
-    /// to all clients via these channels. Each client accumulates rects in
-    /// its own pending bitmap -- no shared state, no clearing issues.
+    /// to all clients via these channels.
     dirty_senders: Vec<ClientDirtySender>,
     /// Futures for all active client connections. Each resolves to the
     /// client's id when the connection ends.
@@ -188,40 +234,69 @@ struct MultiClientServer<T: Listener> {
     /// an abort signal.
     abort_senders: Vec<(u64, mesh::OneshotSender<()>)>,
     next_client_id: u64,
-    /// Maximum concurrent clients. Bounds memory (~8MB per client for
-    /// framebuffer buffers) and prevents VRAM mutex contention.
+    /// Maximum concurrent clients.
     max_clients: usize,
     /// When true, evict the oldest client instead of rejecting new ones.
     evict_oldest: bool,
+    /// Dirty-tracking tile size, resolved to pixels for each client's
+    /// `UpdateState`.
+    tile_size: VncTileSize,
 }
 
 impl<T: Listener> MultiClientServer<T> {
+    /// Tells the synth video device whether the guest's screen/pointer updates
+    /// are needed. No-op when no device is wired up.
+    fn signal_updates_needed(&self, needed: bool) {
+        if let Some(channels) = &self.synth_video {
+            channels.updates_needed_send.send(needed);
+            tracing::debug!(needed, "signaled updates-needed to video device");
+        }
+    }
+
+    /// Signal the guest to start/stop reporting when client presence crosses the
+    /// empty<->non-empty boundary. `was_empty` is whether `abort_senders` was
+    /// empty BEFORE the connect/disconnect/evict that just mutated it. No-op when
+    /// presence didn't cross the boundary.
+    fn signal_presence(&self, was_empty: bool) {
+        let now_empty = self.abort_senders.is_empty();
+        if was_empty != now_empty {
+            self.signal_updates_needed(!now_empty);
+        }
+    }
+
     /// Main loop: accept new clients, reap finished ones, and broadcast
     /// device dirty rects to per-client channels.
     async fn process(&mut self, driver: &LocalDriver) -> anyhow::Result<()> {
         enum Event<A> {
             Accepted(A),
             ClientDone(u64),
-            DirtyRects(Vec<video_core::DirtyRect>),
+            DirtyRects(DirtyBatch),
         }
 
         let mut device_dirty_seen = false;
 
+        // Force the device to a known state on (re)start: no clients yet.
+        self.signal_updates_needed(false);
+
         loop {
             let listener = &mut self.listener;
             let clients = &mut self.clients;
-            let dirty_recv = &mut self.dirty_recv;
+            let synth_video = &mut self.synth_video;
 
             // Optional future for dirty rect reception (pending if no video device).
+            // Bound each drain before returning to client/accept selection.
             let dirty_fut = async {
-                match dirty_recv {
-                    Some(recv) => recv.recv().await,
+                match synth_video {
+                    Some(channels) => channels
+                        .dirty_recv
+                        .recv()
+                        .await
+                        .map(|first| DirtyBatch::drain(first, &mut channels.dirty_recv)),
                     None => std::future::pending().await,
                 }
             };
 
             // Optional future for client completion (pending if no clients).
-            // A separate future avoids duplicating the entire select! block.
             let client_done = async {
                 if clients.is_empty() {
                     std::future::pending().await
@@ -237,15 +312,15 @@ impl<T: Listener> MultiClientServer<T> {
                 }
                 id = client_done.fuse() => Event::ClientDone(id),
                 msg = dirty_fut.fuse() => match msg {
-                    Ok(rects) => Event::DirtyRects(rects),
+                    Ok(batch) => Event::DirtyRects(batch),
                     Err(_) => {
-                        // Upstream dirty channel closed (video device reset
-                        // or teardown). Drop it so clients fall back to tile
-                        // diff instead of freezing with device_dirty_seen.
+                        // Upstream dirty channel closed (video device reset or
+                        // teardown). Drop the whole video connection so clients
+                        // fall back to tile diff.
                         tracing::warn!("device dirty channel closed, falling back to tile diff");
-                        self.dirty_recv = None;
-                        // Close all per-client dirty senders so clients
-                        // detect the closure and reset device_dirty_seen.
+                        self.synth_video = None;
+                        // Close all per-client dirty senders so clients reset
+                        // device_dirty_seen.
                         self.dirty_senders.clear();
                         continue;
                     }
@@ -254,18 +329,31 @@ impl<T: Listener> MultiClientServer<T> {
 
             match event {
                 Event::Accepted((socket, remote_addr)) => {
-                    // Use abort_senders.len() as the active client count,
-                    // not clients.len(). Evicted clients are removed from
-                    // abort_senders immediately but their futures may linger
-                    // in self.clients until the next poll reaps them via
-                    // ClientDone. This means self.clients.len() can transiently
-                    // exceed max_clients during rapid connection churn (e.g.,
-                    // max_clients=1 with A→B→C arriving before A is reaped).
-                    // This is acceptable: the dying futures are in their abort
-                    // cleanup path and resolve within one poll cycle. Only
-                    // abort_senders.len() clients are actively running the VNC
-                    // protocol. Awaiting the evicted client before spawning
-                    // the replacement would add latency to every new connection.
+                    // Use abort_senders.len() as the active client count, not
+                    // clients.len(). Evicted clients are removed from
+                    // abort_senders immediately but their futures may linger in
+                    // self.clients until the next poll reaps them via ClientDone,
+                    // so self.clients.len() can transiently exceed max_clients.
+                    //
+                    // Register the socket BEFORE evicting anyone: if registration
+                    // fails we must not have already disconnected the victim for a
+                    // replacement that never joins.
+                    let sock: socket2::Socket = socket.into();
+                    let _ = sock.set_tcp_nodelay(true);
+                    let socket = match PolledSocket::new(driver, sock) {
+                        Ok(socket) => socket,
+                        Err(e) => {
+                            tracing::error!(
+                                error = %e,
+                                "failed to register VNC client socket, dropping connection"
+                            );
+                            continue;
+                        }
+                    };
+                    // Capture presence before eviction: evict-oldest removes a
+                    // client, so reading it afterward would mis-detect the
+                    // connect transition.
+                    let was_empty = self.abort_senders.is_empty();
                     if self.abort_senders.len() >= self.max_clients {
                         if self.evict_oldest && !self.abort_senders.is_empty() {
                             // Disconnect the oldest client to make room.
@@ -287,45 +375,75 @@ impl<T: Listener> MultiClientServer<T> {
                             continue;
                         }
                     }
-                    let sock: socket2::Socket = socket.into();
-                    let _ = sock.set_tcp_nodelay(true);
-                    match PolledSocket::new(driver, sock) {
-                        Ok(socket) => self.spawn_client(driver, socket, remote_addr),
-                        Err(e) => {
-                            tracing::error!(
-                                error = %e,
-                                "failed to register VNC client socket, dropping connection"
-                            );
-                        }
-                    }
+                    self.spawn_client(driver, socket, remote_addr);
+                    // First client connected: ask the guest to start reporting
+                    // screen/pointer updates again.
+                    self.signal_presence(was_empty);
                 }
                 Event::ClientDone(id) => {
+                    let was_empty = self.abort_senders.is_empty();
                     self.abort_senders.retain(|(cid, _)| *cid != id);
                     self.dirty_senders.retain(|s| s.id != id);
                     tracing::info!(id, count = self.clients.len(), "VNC client disconnected");
+                    // Last client gone: tell the guest it can stop reporting.
+                    self.signal_presence(was_empty);
                 }
-                Event::DirtyRects(rects) => {
+                Event::DirtyRects(batch) => {
+                    if self.abort_senders.is_empty() {
+                        // Dirt with no clients means the device's synthvid channel
+                        // re-handshaked while idle (guest reboot or video-driver
+                        // reload) and reset to the guest's enabled default. The
+                        // coordinator can't observe that re-handshake, so it
+                        // re-asserts on every idle dirt event rather than tracking
+                        // an "already signaled" flag, which would miss the reset
+                        // and leave the guest reporting. The device dedupes the
+                        // FeatureChange, so this settles in one cycle.
+                        self.signal_updates_needed(false);
+                        continue;
+                    }
                     if !device_dirty_seen {
                         device_dirty_seen = true;
                         tracing::info!("device dirty rects active, preferring over tile diff");
                     }
-                    // Broadcast to all connected clients. Arc avoids cloning
-                    // the rect Vec for each client (only ref-count bump).
-                    let rects = Arc::new(rects);
-                    for s in &mut self.dirty_senders {
-                        if s.sender.try_send(Arc::clone(&rects)).is_err() {
+                    if batch.messages == MAX_DIRTY_MESSAGES_PER_BATCH {
+                        tracelimit::warn_ratelimited!(
+                            messages = batch.messages,
+                            "device dirty drain reached message limit"
+                        );
+                    } else if batch.messages > 1 {
+                        tracing::debug!(
+                            messages = batch.messages,
+                            "coalesced device dirty messages"
+                        );
+                    }
+                    if let Some(merged) = batch.rects {
+                        let rects = Arc::new(merged);
+                        for s in &mut self.dirty_senders {
+                            if s.sender.try_send(Arc::clone(&rects)).is_err() {
+                                // Full channel: flag the client for a full refresh.
+                                s.missed_dirty.store(true, Ordering::Relaxed);
+                                tracelimit::warn_ratelimited!(
+                                    id = s.id,
+                                    "client dirty channel full, flagged for full refresh (client falling behind)"
+                                );
+                            }
+                        }
+                        tracing::trace!(
+                            rect_count = rects.len(),
+                            clients = self.dirty_senders.len(),
+                            "broadcast coalesced device dirty rects"
+                        );
+                    } else {
+                        // Pathologically large dirty set. Skip the broadcast and
+                        // have every client do one full refresh.
+                        tracelimit::warn_ratelimited!(
+                            cap = MAX_COALESCED_DIRTY_RECTS,
+                            "coalesced dirty exceeds cap, forcing full refresh on all clients"
+                        );
+                        for s in &mut self.dirty_senders {
                             s.missed_dirty.store(true, Ordering::Relaxed);
-                            tracing::debug!(
-                                id = s.id,
-                                "client dirty channel full, flagged for full refresh"
-                            );
                         }
                     }
-                    tracing::trace!(
-                        rect_count = rects.len(),
-                        clients = self.dirty_senders.len(),
-                        "broadcast device dirty rects"
-                    );
                 }
             }
         }
@@ -352,60 +470,72 @@ impl<T: Listener> MultiClientServer<T> {
         let view = self.view.clone();
         let input_send = self.input_send.clone();
         let (abort_send, abort_recv) = mesh::oneshot();
-        // Per-client channel for receiving device dirty rects from the coordinator.
-        // Capacity 4: enough to buffer a few batches without blocking the coordinator.
-        // Bounded so a slow client can't unboundedly buffer broadcast batches —
-        // when full, the coordinator sets `missed_dirty` and the client falls
-        // back to a full refresh on the next pass.
-        let (dirty_send, dirty_recv) = async_channel::bounded::<Arc<Vec<video_core::DirtyRect>>>(4);
-        let missed_dirty = Arc::new(AtomicBool::new(false));
-        self.dirty_senders.push(ClientDirtySender {
-            id,
-            sender: dirty_send,
-            missed_dirty: missed_dirty.clone(),
-        });
+        // Per-client channel for receiving device dirty rects from the
+        // coordinator. Only wired up when a synth video device is present;
+        // without it the client tile-diffs. Bounded so a slow client can't
+        // unboundedly buffer broadcast batches: when full, the coordinator sets
+        // `missed_dirty` and the client falls back to a full refresh.
+        let (dirty_recv, missed_dirty) = if self.synth_video.is_some() {
+            let (dirty_send, dirty_recv) =
+                async_channel::bounded::<Arc<Vec<video_core::DirtyRect>>>(4);
+            let missed_dirty = Arc::new(AtomicBool::new(false));
+            self.dirty_senders.push(ClientDirtySender {
+                id,
+                sender: dirty_send,
+                missed_dirty: missed_dirty.clone(),
+            });
+            (Some(dirty_recv), Some(missed_dirty))
+        } else {
+            (None, None)
+        };
 
         // Each client gets its own VNC server instance with independent
         // zlib state and pixel format, sharing only the framebuffer and
-        // input channel. The first frame is always a full screen refresh
-        // (force_full_update=true in run_internal), so new clients don't
-        // need to receive prior device dirty rects.
+        // input channel. The first frame is always a full screen refresh.
         let driver = driver.clone();
-        let client_future = Box::pin(async move {
-            let fb = SharedView(view);
-            let input = SharedInput(input_send);
-            let mut vncserver = vnc::Server::new(
-                "OpenVMM VM".into(),
-                socket,
-                fb,
-                input,
-                Some(dirty_recv),
-                Some(missed_dirty),
-            );
-            let mut updater = vncserver.updater();
+        let tile_size_mode = match self.tile_size {
+            VncTileSize::Cycle => vnc::TileSizeMode::Cycle,
+            fixed => vnc::TileSizeMode::Fixed(fixed.pixels()),
+        };
+        let client_future = Box::pin(
+            async move {
+                let fb = SharedView(view);
+                let input = SharedInput(input_send);
+                let mut vncserver = vnc::Server::new(
+                    "OpenVMM VM".into(),
+                    socket,
+                    fb,
+                    input,
+                    dirty_recv,
+                    missed_dirty,
+                    tile_size_mode,
+                );
+                let mut updater = vncserver.updater();
 
-            let mut timer = PolledTimer::new(&driver);
-            let update_task = async {
-                loop {
-                    timer.sleep(Duration::from_millis(30)).await;
-                    updater.update();
+                let mut timer = PolledTimer::new(&driver);
+                let update_task = async {
+                    loop {
+                        timer.sleep(Duration::from_millis(30)).await;
+                        updater.update();
+                    }
+                };
+
+                let r = futures::select! { // race semantics
+                    r = vncserver.run().fuse() => r.context("VNC error"),
+                    _ = abort_recv.fuse() => Err(anyhow!("VNC connection aborted")),
+                    _ = update_task.fuse() => unreachable!(),
+                };
+                match r {
+                    Ok(_) => {}
+                    Err(err) => tracing::error!(error = err.as_error(), id, "VNC client error"),
                 }
-            };
-
-            let r = futures::select! { // race semantics
-                r = vncserver.run().fuse() => r.context("VNC error"),
-                _ = abort_recv.fuse() => Err(anyhow!("VNC connection aborted")),
-                _ = update_task.fuse() => unreachable!(),
-            };
-            match r {
-                Ok(_) => {}
-                Err(err) => tracing::error!(error = err.as_error(), id, "VNC client error"),
+                id
             }
-            id
-        });
+            // Tag every log from this client's task with the client id.
+            .instrument(tracing::info_span!("vnc_client", id)),
+        );
 
-        // Store the abort sender separately so we can drop it to cancel
-        // the client on shutdown without needing to drive the future.
+        // Store the abort sender separately; dropping it cancels the client.
         self.abort_senders.push((id, abort_send));
         self.clients.push(client_future);
     }
@@ -426,7 +556,7 @@ impl<T: Listener> inspect::Inspect for MultiClientServer<T> {
         let mut resp = req.respond();
         resp.display_debug("local_addr", &self.listener.get().local_addr().unwrap());
         resp.field("client_count", self.clients.len());
-        resp.field("has_dirty_recv", self.dirty_recv.is_some());
+        resp.field("has_synth_video", self.synth_video.is_some());
     }
 }
 
@@ -452,12 +582,12 @@ impl vnc::Input for SharedInput {
 /// Wrapper around `Arc<Mutex<ViewWrapper>>` that implements `vnc::Framebuffer`.
 ///
 /// The mutex is needed because `View::resolution()` mutates internal state
-/// (drains a channel). Lock durations are trivially short (memory reads).
+/// (drains a channel).
 struct SharedView(Arc<Mutex<ViewWrapper>>);
 
 impl vnc::Framebuffer for SharedView {
-    fn read_line(&mut self, line: u16, data: &mut [u8]) {
-        self.0.lock().0.read_line(line, data)
+    fn read_line(&mut self, line: u16, x: u16, data: &mut [u8]) {
+        self.0.lock().0.read_line_at(line, x, data)
     }
 
     fn resolution(&mut self) -> (u16, u16) {
@@ -485,9 +615,70 @@ mod tests {
     use std::time::Duration;
     use video_core::DirtyRect;
     use video_core::FramebufferFormat;
+    use vnc::EncodingType;
 
-    const ENCODING_TYPE_RAW: u32 = 0;
-    const ENCODING_TYPE_DESKTOP_SIZE: u32 = -223i32 as u32;
+    const TEST_DIRTY_RECT: DirtyRect = DirtyRect {
+        left: 0,
+        top: 0,
+        right: 16,
+        bottom: 16,
+    };
+
+    #[test]
+    fn dirty_drain_limits_messages_and_preserves_remainder() {
+        for rects in [vec![], vec![TEST_DIRTY_RECT]] {
+            let (send, mut recv) = mesh::channel();
+            for _ in 0..MAX_DIRTY_MESSAGES_PER_BATCH {
+                send.send(rects.clone());
+            }
+            let batch = DirtyBatch::drain(rects.clone(), &mut recv);
+            assert_eq!(batch.messages, MAX_DIRTY_MESSAGES_PER_BATCH);
+            assert_eq!(
+                batch.rects.unwrap().len(),
+                MAX_DIRTY_MESSAGES_PER_BATCH * rects.len()
+            );
+            assert_eq!(recv.try_recv().unwrap().len(), rects.len());
+            assert!(matches!(recv.try_recv(), Err(mesh::TryRecvError::Empty)));
+        }
+    }
+
+    #[test]
+    fn dirty_drain_stops_at_exact_rectangle_limit() {
+        let (send, mut recv) = mesh::channel();
+        send.send(vec![TEST_DIRTY_RECT]);
+        send.send(vec![DirtyRect {
+            left: 16,
+            ..TEST_DIRTY_RECT
+        }]);
+        let batch = DirtyBatch::drain(
+            vec![TEST_DIRTY_RECT; MAX_COALESCED_DIRTY_RECTS - 1],
+            &mut recv,
+        );
+        assert_eq!(batch.messages, 2);
+        assert_eq!(batch.rects.unwrap().len(), MAX_COALESCED_DIRTY_RECTS);
+        assert_eq!(recv.try_recv().unwrap()[0].left, 16);
+    }
+
+    #[test]
+    fn dirty_drain_discards_overflow_without_consuming_later_messages() {
+        for oversized_first in [false, true] {
+            let (send, mut recv) = mesh::channel();
+            let first = if oversized_first {
+                vec![TEST_DIRTY_RECT; MAX_COALESCED_DIRTY_RECTS + 1]
+            } else {
+                send.send(vec![TEST_DIRTY_RECT; MAX_COALESCED_DIRTY_RECTS]);
+                vec![TEST_DIRTY_RECT]
+            };
+            send.send(vec![DirtyRect {
+                left: 16,
+                ..TEST_DIRTY_RECT
+            }]);
+            let batch = DirtyBatch::drain(first, &mut recv);
+            assert_eq!(batch.messages, if oversized_first { 1 } else { 2 });
+            assert!(batch.rects.is_none());
+            assert_eq!(recv.try_recv().unwrap()[0].left, 16);
+        }
+    }
 
     #[derive(Debug)]
     struct UpdateRect {
@@ -495,7 +686,7 @@ mod tests {
         y: u16,
         width: u16,
         height: u16,
-        encoding: u32,
+        encoding: EncodingType,
         payload: Vec<u8>,
     }
 
@@ -568,13 +759,15 @@ mod tests {
             self.stream.write_all(&request).unwrap();
         }
 
-        fn send_set_encodings(&mut self, encodings: &[u32]) {
+        fn send_set_encodings(&mut self, encodings: &[EncodingType]) {
             let mut request = [0; 4];
             request[0] = 2;
             request[2..4].copy_from_slice(&(encodings.len() as u16).to_be_bytes());
             self.stream.write_all(&request).unwrap();
             for &encoding in encodings {
-                self.stream.write_all(&encoding.to_be_bytes()).unwrap();
+                self.stream
+                    .write_all(&encoding.wire_u32().to_be_bytes())
+                    .unwrap();
             }
         }
 
@@ -611,15 +804,16 @@ mod tests {
                 let y = u16::from_be_bytes([rect[2], rect[3]]);
                 let width = u16::from_be_bytes([rect[4], rect[5]]);
                 let height = u16::from_be_bytes([rect[6], rect[7]]);
-                let encoding = u32::from_be_bytes([rect[8], rect[9], rect[10], rect[11]]);
+                let encoding =
+                    EncodingType(i32::from_be_bytes([rect[8], rect[9], rect[10], rect[11]]));
                 let payload_len = match encoding {
-                    ENCODING_TYPE_RAW => width as usize * height as usize * 4,
-                    ENCODING_TYPE_DESKTOP_SIZE => {
+                    EncodingType::RAW => width as usize * height as usize * 4,
+                    EncodingType::DESKTOP_SIZE => {
                         self.width = width;
                         self.height = height;
                         0
                     }
-                    other => panic!("unsupported test encoding {other:#x}"),
+                    other => panic!("unsupported test encoding {:#x}", other.0),
                 };
                 let mut payload = vec![0; payload_len];
                 self.stream.read_exact(&mut payload).unwrap();
@@ -645,7 +839,12 @@ mod tests {
         format_send: mesh::Sender<FramebufferFormat>,
         input_recv: mesh::Receiver<InputData>,
         dirty_send: Option<mesh::Sender<Vec<DirtyRect>>>,
+        updates_needed_recv: mesh::Receiver<bool>,
+        /// Keeps the updates-needed sender alive when there is no synth video
+        /// device (with_dirty=false), so `updates_needed_recv` stays open.
+        _updates_needed_send: Option<mesh::Sender<bool>>,
         stop_send: Option<mesh::OneshotSender<()>>,
+        done_recv: std::sync::mpsc::Receiver<()>,
         join: Option<JoinHandle<anyhow::Result<()>>>,
     }
 
@@ -655,6 +854,9 @@ mod tests {
                 stop.send(());
             }
             if let Some(join) = self.join.take() {
+                self.done_recv
+                    .recv_timeout(Duration::from_secs(10))
+                    .expect("VNC worker did not stop");
                 let result = join.join().unwrap();
                 assert!(result.is_ok(), "{result:?}");
             }
@@ -686,6 +888,9 @@ mod tests {
         evict_oldest: bool,
     ) -> WorkerServer {
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        socket2::SockRef::from(&listener)
+            .set_send_buffer_size(64 * 1024)
+            .unwrap();
         let addr = listener.local_addr().unwrap();
 
         let vram = alloc_shared_memory(FRAMEBUFFER_SIZE, "vnc-worker-test").unwrap();
@@ -705,34 +910,47 @@ mod tests {
             .unwrap();
 
         let (input_send, input_recv) = mesh::channel();
-        let (dirty_send, dirty_recv) = if with_dirty {
-            let (send, recv) = mesh::channel();
-            (Some(send), Some(recv))
+        let (updates_needed_send, updates_needed_recv) = mesh::channel();
+        let (synth_video, dirty_send, updates_needed_keepalive) = if with_dirty {
+            let (dirty_send, dirty_recv) = mesh::channel();
+            (
+                Some(SynthVideoChannels {
+                    dirty_recv,
+                    updates_needed_send,
+                }),
+                Some(dirty_send),
+                None,
+            )
         } else {
-            (None, None)
+            // No synth video device: keep the sender alive here (see the field doc).
+            (None, None, Some(updates_needed_send))
         };
         let (stop_send, stop_recv) = mesh::oneshot();
+        let (done_send, done_recv) = std::sync::mpsc::channel();
 
         let join = thread::spawn(move || {
-            block_with_io(async |driver| -> anyhow::Result<()> {
+            let result = block_with_io(async |driver| -> anyhow::Result<()> {
                 let mut server = MultiClientServer {
                     listener: PolledSocket::new(&driver, listener)?,
                     view: Arc::new(Mutex::new(ViewWrapper(access.view().unwrap()))),
                     input_send,
-                    dirty_recv,
+                    synth_video,
                     dirty_senders: Vec::new(),
                     clients: unicycle::FuturesUnordered::new(),
                     abort_senders: Vec::new(),
                     next_client_id: 0,
                     max_clients,
                     evict_oldest,
+                    tile_size: VncTileSize::Tile16,
                 };
 
                 futures::select! {
                     result = server.process(&driver).fuse() => result,
                     _ = stop_recv.fuse() => Ok(()),
                 }
-            })
+            });
+            let _ = done_send.send(());
+            result
         });
 
         WorkerServer {
@@ -741,19 +959,49 @@ mod tests {
             format_send,
             input_recv,
             dirty_send,
+            updates_needed_recv,
+            _updates_needed_send: updates_needed_keepalive,
             stop_send: Some(stop_send),
+            done_recv,
             join: Some(join),
         }
     }
 
+    // Block until the message arrives; nextest fails a wedged test on its own
+    // slow-test timeout.
     fn wait_for_input(recv: &mut mesh::Receiver<InputData>) -> InputData {
-        for _ in 0..100 {
-            if let Ok(data) = recv.try_recv() {
-                return data;
-            }
-            thread::sleep(Duration::from_millis(10));
-        }
-        panic!("timed out waiting for input");
+        pal_async::local::block_on(recv.recv()).expect("input channel closed")
+    }
+
+    fn wait_for_signal(recv: &mut mesh::Receiver<bool>) -> bool {
+        pal_async::local::block_on(recv.recv()).expect("updates-needed channel closed")
+    }
+
+    #[test]
+    fn e2e_signals_updates_needed_on_presence_and_idle_dirt() {
+        let mut server = start_server(32, 32, true);
+
+        // Startup with no clients signals "not needed".
+        assert!(!wait_for_signal(&mut server.updates_needed_recv));
+
+        // First client connect signals "needed".
+        let client = Client::connect(server.addr);
+        assert!(wait_for_signal(&mut server.updates_needed_recv));
+
+        // Last client disconnect signals "not needed".
+        drop(client);
+        assert!(!wait_for_signal(&mut server.updates_needed_recv));
+
+        // Dirt arriving while idle re-asserts "not needed" (the self-heal).
+        server.dirty_send.as_ref().unwrap().send(vec![DirtyRect {
+            left: 0,
+            top: 0,
+            right: 16,
+            bottom: 16,
+        }]);
+        assert!(!wait_for_signal(&mut server.updates_needed_recv));
+
+        server.stop();
     }
 
     #[test]
@@ -767,14 +1015,14 @@ mod tests {
         assert_eq!(first.len(), 1);
         assert_eq!(first[0].width, 32);
         assert_eq!(first[0].height, 32);
-        assert_eq!(first[0].encoding, 0);
+        assert_eq!(first[0].encoding, EncodingType::RAW);
 
         client2.send_update_request(false);
         let second = client2.read_update();
         assert_eq!(second.len(), 1);
         assert_eq!(second[0].width, 32);
         assert_eq!(second[0].height, 32);
-        assert_eq!(second[0].encoding, 0);
+        assert_eq!(second[0].encoding, EncodingType::RAW);
 
         let pixel_offset = (20usize * 32 + 20) * 4;
         server
@@ -795,7 +1043,7 @@ mod tests {
         assert_eq!(update1[0].y, 16);
         assert_eq!(update1[0].width, 16);
         assert_eq!(update1[0].height, 16);
-        assert_eq!(update1[0].encoding, 0);
+        assert_eq!(update1[0].encoding, EncodingType::RAW);
         assert_eq!(update1[0].payload.len(), 16 * 16 * 4);
 
         client2.send_update_request(true);
@@ -805,7 +1053,7 @@ mod tests {
         assert_eq!(update2[0].y, 16);
         assert_eq!(update2[0].width, 16);
         assert_eq!(update2[0].height, 16);
-        assert_eq!(update2[0].encoding, 0);
+        assert_eq!(update2[0].encoding, EncodingType::RAW);
         assert_eq!(update2[0].payload.len(), 16 * 16 * 4);
 
         client1.send_pointer_event(1, 31, 31);
@@ -820,6 +1068,109 @@ mod tests {
 
         drop(client1);
         drop(client2);
+        server.stop();
+    }
+
+    #[test]
+    fn e2e_stalled_client_does_not_block_updates_and_recovers_after_overflow() {
+        const WIDTH: usize = 1024;
+        const HEIGHT: usize = 1024;
+        let mut server = start_server(WIDTH as u16, HEIGHT as u16, true);
+        let mut slow = Client::connect(server.addr);
+        socket2::SockRef::from(&slow.stream)
+            .set_recv_buffer_size(64 * 1024)
+            .unwrap();
+        let mut healthy = Client::connect(server.addr);
+        healthy.send_update_request(false);
+        let initial = healthy.read_update();
+        assert_eq!(initial.len(), 1);
+        let mut healthy_pixels = initial[0].payload.clone();
+        let mut expected = vec![0; WIDTH * HEIGHT * 4];
+        assert_eq!(healthy_pixels, expected);
+
+        slow.send_update_request(false);
+        // Consume only the headers. The 4 MiB raw payload cannot fit in the
+        // bounded socket buffers while this client stops reading.
+        let mut header = [0; 16];
+        slow.stream.read_exact(&mut header).unwrap();
+        assert_eq!(&header[..4], &[0, 0, 0, 1]);
+        assert_eq!(&header[12..], &[0; 4]);
+
+        for round in 0..8u16 {
+            let x = 20 + round * 16;
+            let y = 20 + round * 16;
+            let color = pixel(round as u8 + 1, 0x34, 0x56);
+            let offset = (y as usize * WIDTH + x as usize) * 4;
+            server.vram.write_at(offset, &color).unwrap();
+            expected[offset..offset + 4].copy_from_slice(&color);
+
+            // Each bounded burst takes at least three broadcasts. Repeating
+            // across rounds overflows the stalled client's four-batch queue.
+            for _ in 0..MAX_DIRTY_MESSAGES_PER_BATCH * 2 + 1 {
+                server.dirty_send.as_ref().unwrap().send(vec![DirtyRect {
+                    left: i32::from(x),
+                    top: i32::from(y),
+                    right: i32::from(x) + 1,
+                    bottom: i32::from(y) + 1,
+                }]);
+            }
+
+            let deadline = std::time::Instant::now() + Duration::from_secs(10);
+            loop {
+                healthy.send_update_request(true);
+                for rect in healthy.read_update() {
+                    assert_eq!(rect.encoding, EncodingType::RAW);
+                    for row in 0..rect.height as usize {
+                        let start = ((rect.y as usize + row) * WIDTH + rect.x as usize) * 4;
+                        let len = rect.width as usize * 4;
+                        let src = row * len;
+                        healthy_pixels[start..start + len]
+                            .copy_from_slice(&rect.payload[src..src + len]);
+                    }
+                }
+                if healthy_pixels == expected {
+                    break;
+                }
+                assert!(
+                    std::time::Instant::now() < deadline,
+                    "healthy client did not receive current pixels"
+                );
+            }
+
+            healthy.send_pointer_event(1, WIDTH as u16 - 1, HEIGHT as u16 - 1);
+            let event = block_with_io(async |driver| {
+                let mut timer = PolledTimer::new(&driver);
+                futures::select! {
+                    event = server.input_recv.recv().fuse() => event.unwrap(),
+                    _ = timer.sleep(Duration::from_secs(10)).fuse() => {
+                        panic!("healthy client input was blocked");
+                    }
+                }
+            });
+            assert!(matches!(
+                event,
+                InputData::Mouse(MouseData {
+                    button_mask: 1,
+                    x: 0x7fff,
+                    y: 0x7fff,
+                })
+            ));
+        }
+        let mut old_pixels = vec![0; WIDTH * HEIGHT * 4];
+        slow.stream.read_exact(&mut old_pixels).unwrap();
+        assert!(old_pixels.iter().all(|&b| b == 0));
+        slow.send_update_request(true);
+        let recovered = slow.read_update();
+        assert_eq!(recovered.len(), 1);
+        assert_eq!(recovered[0].encoding, EncodingType::RAW);
+        assert_eq!((recovered[0].x, recovered[0].y), (0, 0));
+        // Sparse dirt alone cannot produce a full-frame incremental response:
+        // this verifies overflow recovery through the wire protocol.
+        assert_eq!(recovered[0].width as usize, WIDTH);
+        assert_eq!(recovered[0].height as usize, HEIGHT);
+        assert_eq!(recovered[0].payload, expected);
+
+        // Shutdown must not require either connected client to disconnect.
         server.stop();
     }
 
@@ -864,7 +1215,7 @@ mod tests {
             client.send_update_request(true);
             if let Some(update) = client.try_read_update(Duration::from_millis(50)) {
                 if update.len() == 1
-                    && update[0].encoding == ENCODING_TYPE_RAW
+                    && update[0].encoding == EncodingType::RAW
                     && update[0].x == 16
                     && update[0].y == 16
                     && update[0].width == 16
@@ -992,12 +1343,12 @@ mod tests {
     fn e2e_evict_oldest_disconnects_first_client() {
         let server = start_server_with_options(4, 4, false, 1, true);
 
-        // Connect client A — should work.
+        // Connect client A, should work.
         let mut client_a = Client::connect(server.addr);
         client_a.send_update_request(false);
         let _ = client_a.read_update();
 
-        // Connect client B — should evict client A.
+        // Connect client B, should evict client A.
         let mut client_b = Client::connect(server.addr);
 
         // Client A should be disconnected.
@@ -1040,9 +1391,7 @@ mod tests {
         let read = rejected.read(&mut buf);
         assert!(matches!(read, Ok(0) | Err(_)));
 
-        // Client A should still work — send a non-incremental request
-        // to force a full update (incremental with no changes produces
-        // no response).
+        // Client A should still work; non-incremental forces a full update.
         client_a.send_update_request(false);
         let update = client_a.read_update();
         assert!(!update.is_empty());
@@ -1065,7 +1414,7 @@ mod tests {
         client_b.send_update_request(false);
         let _ = client_b.read_update();
 
-        // Connect C — should evict A (the oldest).
+        // Connect C, should evict A (the oldest).
         let mut client_c = Client::connect(server.addr);
 
         // Client A should be disconnected.
@@ -1098,11 +1447,11 @@ mod tests {
         let server = start_server(4, 2, false);
         let mut client = Client::connect(server.addr);
 
-        client.send_set_encodings(&[ENCODING_TYPE_DESKTOP_SIZE]);
+        client.send_set_encodings(&[EncodingType::DESKTOP_SIZE]);
         client.send_update_request(false);
         let initial = client.read_update();
         assert_eq!(initial.len(), 1);
-        assert_eq!(initial[0].encoding, ENCODING_TYPE_RAW);
+        assert_eq!(initial[0].encoding, EncodingType::RAW);
 
         server.format_send.send(FramebufferFormat {
             width: 6,
@@ -1113,13 +1462,13 @@ mod tests {
         client.send_update_request(true);
         let resize = client.read_update();
         assert_eq!(resize.len(), 1);
-        assert_eq!(resize[0].encoding, ENCODING_TYPE_DESKTOP_SIZE);
+        assert_eq!(resize[0].encoding, EncodingType::DESKTOP_SIZE);
         assert_eq!(resize[0].width, 6);
         assert_eq!(resize[0].height, 3);
 
         let refresh = client.read_update();
         assert_eq!(refresh.len(), 1);
-        assert_eq!(refresh[0].encoding, ENCODING_TYPE_RAW);
+        assert_eq!(refresh[0].encoding, EncodingType::RAW);
         assert_eq!(refresh[0].width, 6);
         assert_eq!(refresh[0].height, 3);
 
