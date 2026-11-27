@@ -427,6 +427,7 @@ impl SimpleFlowNode for Node {
             .then(|| build_guest_test_uefi(CommonArch::Aarch64));
         let mshv_host_boot_x64 = build.mshv_host_boot_x64.then(|| {
             ctx.reqv(|host_boot| crate::build_mshv_host_boot::Request {
+                arch: CommonArch::X86_64,
                 profile: CommonProfile::from_release(release),
                 host_boot,
             })

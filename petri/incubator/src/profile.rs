@@ -46,10 +46,14 @@ pub enum IncubatorBoot {
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "kebab-case", deny_unknown_fields)]
 pub struct MshvBootConfig {
-    /// Development-only x64 UEFI host boot application executable.
+    /// Development-only UEFI host boot application for the guest architecture.
     pub host_boot: std::path::PathBuf,
-    /// Compatible x64 UEFI firmware.
+    /// Compatible UEFI firmware for the backend machine.
     pub firmware: std::path::PathBuf,
+    /// Optional QEMU writable flash template (SBSA flash1 includes UEFI code
+    /// and variables). Each run uses a disposable copy.
+    #[serde(default)]
+    pub firmware_vars: Option<std::path::PathBuf>,
     /// Extracted artifact directory containing `boot/`.
     pub boot_artifacts: std::path::PathBuf,
     /// Linux options, before Incubator's required initrd entry point.
@@ -89,7 +93,7 @@ pub struct OpenvmmConfig {
 }
 
 /// Guest architecture emulated by an incubator backend.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, clap::ValueEnum)]
 #[serde(rename_all = "kebab-case")]
 pub enum Arch {
     /// x86-64.
@@ -218,7 +222,8 @@ pub struct QemuTcgConfig {
     pub memory: String,
     /// Number of CPUs (e.g., "2").
     pub smp: String,
-    /// Extra kernel command line arguments. The incubator always appends
+    /// Extra Linux-direct kernel command line arguments. Leave empty for mshv,
+    /// which uses `boot.kernel-cmdline`. The incubator always appends
     /// `rdinit=/incubator-init.sh` (the injected init script); everything else,
     /// including the arch-specific serial console (e.g., "console=ttyAMA0"
     /// for aarch64 PL011, "console=ttyS0" for x86 16550), comes from here.
@@ -229,12 +234,33 @@ impl IncubatorProfile {
     /// Reject unsupported launcher/boot combinations before reading artifacts.
     pub fn validate(&self) -> anyhow::Result<()> {
         match (&self.incubator, &self.boot) {
-            (IncubatorBackend::QemuTcg(_), IncubatorBoot::Mshv(_)) => {
-                anyhow::bail!("mshv boot is not yet supported by the qemu-tcg launcher");
+            (IncubatorBackend::QemuTcg(config), IncubatorBoot::Mshv(boot)) => {
+                if config.machine.split(',').next() == Some("sbsa-ref") {
+                    anyhow::ensure!(
+                        boot.firmware_vars.is_some(),
+                        "sbsa-ref mshv boot requires boot.firmware (flash0) and boot.firmware-vars (flash1)"
+                    );
+                } else {
+                    anyhow::ensure!(
+                        config
+                            .machine
+                            .split(',')
+                            .any(|option| option == "virtualization=on"),
+                        "qemu-tcg mshv boot requires virtualization=on to expose EL2"
+                    );
+                }
+                anyhow::ensure!(
+                    config.cmdline.trim().is_empty(),
+                    "qemu-tcg mshv boot uses boot.kernel-cmdline, not incubator.cmdline"
+                );
             }
-            (IncubatorBackend::Openvmm(config), IncubatorBoot::Mshv(_)) => {
+            (IncubatorBackend::Openvmm(config), IncubatorBoot::Mshv(boot)) => {
                 anyhow::ensure!(config.arch == Arch::X86_64, "mshv boot requires x86-64");
                 anyhow::ensure!(config.nested_virt, "mshv boot requires nested-virt = true");
+                anyhow::ensure!(
+                    boot.firmware_vars.is_none(),
+                    "boot.firmware-vars is supported only by qemu-tcg"
+                );
             }
             (_, IncubatorBoot::LinuxDirect) => {}
         }
@@ -313,10 +339,11 @@ mod tests {
     const OPENVMM: &str = include_str!("../profiles/x86_64-openvmm.toml");
     const MSHV: &str = include_str!("../profiles/x86_64-mshv.toml");
     const QEMU: &str = include_str!("../profiles/aarch64-tcg-pcie.toml");
+    const QEMU_MSHV: &str = include_str!("../profiles/aarch64-tcg-mshv.toml");
 
     #[test]
     fn launcher_and_boot_are_separate() -> anyhow::Result<()> {
-        for profile in [OPENVMM, MSHV, QEMU] {
+        for profile in [OPENVMM, MSHV, QEMU, QEMU_MSHV] {
             IncubatorProfile::from_toml(profile)?.validate()?;
         }
         let direct = IncubatorProfile::from_toml(OPENVMM)?;
@@ -327,6 +354,12 @@ mod tests {
         assert!(matches!(mshv.boot, IncubatorBoot::Mshv(_)));
         let qemu = IncubatorProfile::from_toml(QEMU)?;
         assert!(matches!(qemu.boot, IncubatorBoot::LinuxDirect));
+        let qemu_mshv = IncubatorProfile::from_toml(QEMU_MSHV)?;
+        let IncubatorBoot::Mshv(boot) = qemu_mshv.boot else {
+            panic!("expected mshv boot");
+        };
+        assert!(boot.kernel_cmdline.contains("console=ttyAMA0"));
+        assert!(!boot.hypervisor_cmdline.contains("X2APIC"));
         Ok(())
     }
 
@@ -348,17 +381,15 @@ mod tests {
 
     #[test]
     fn unsupported_combinations_and_misplaced_fields_fail() -> anyhow::Result<()> {
-        let qemu_mshv = format!(
-            "{QEMU}\n[boot]\ntype = 'mshv'\nhost-boot = 'app.efi'\nfirmware = 'fw'\nboot-artifacts = 'boot'\nkernel-cmdline = 'test-kernel'\nhypervisor-cmdline = 'test-hypervisor'\n"
-        );
-        let error = IncubatorProfile::from_toml(&qemu_mshv)?
-            .validate()
-            .unwrap_err();
-        assert!(error.to_string().contains("not yet supported"), "{error:#}");
         for invalid in [
             MSHV.replace("nested-virt = true", "nested-virt = false"),
             MSHV.replace("x86-64", "aarch64"),
             OPENVMM.replace("processors = 2", "processors = 0"),
+            QEMU_MSHV.replace("sbsa-ref", "virt,virtualization=off"),
+            QEMU_MSHV.replace("firmware-vars = \"/path/to/SBSA_FLASH1.fd\"", ""),
+            QEMU_MSHV.replace("aarch64", "x86-64"),
+            QEMU_MSHV.replace("cmdline = \"\"", "cmdline = \"console=ttyAMA0\""),
+            MSHV.replace("[boot]", "[boot]\nfirmware-vars = 'unsupported.fd'"),
         ] {
             assert!(IncubatorProfile::from_toml(&invalid)?.validate().is_err());
         }
@@ -369,6 +400,20 @@ mod tests {
             .is_err()
         );
         assert!(IncubatorProfile::from_toml(&OPENVMM.replace("linux-direct", "typo")).is_err());
+        Ok(())
+    }
+
+    #[test]
+    fn virt_mshv_still_requires_explicit_el2() -> anyhow::Result<()> {
+        let virt = QEMU_MSHV
+            .replace("sbsa-ref", "virt,virtualization=on,secure=on,gic-version=3")
+            .replace("firmware-vars = \"/path/to/SBSA_FLASH1.fd\"", "");
+        IncubatorProfile::from_toml(&virt)?.validate()?;
+        assert!(
+            IncubatorProfile::from_toml(&virt.replace("virtualization=on", "virtualization=off"))?
+                .validate()
+                .is_err()
+        );
         Ok(())
     }
 }

@@ -12,23 +12,27 @@ use std::path::PathBuf;
 
 #[derive(clap::Args)]
 pub struct IncubatorCli {
-    /// Source Incubator profile (currently x64 OpenVMM with mshv boot only).
+    /// Source mshv Incubator profile (x64 OpenVMM or ARM64 QEMU TCG).
     #[arg(long)]
     profile: PathBuf,
 
-    /// Override the pinned mshv root bzImage, not the child VM's kernel.
+    /// Override the pinned mshv root kernel, not the child VM's kernel.
     #[arg(long)]
     kernel: Option<PathBuf>,
 
-    /// Override the pinned shared x64 test initrd.
+    /// Override the pinned test initrd for the guest architecture.
     #[arg(long)]
     initrd: Option<PathBuf>,
 
-    /// Override the pinned x64 MSVM.fd firmware.
+    /// Override MSVM.fd (OpenVMM) or SBSA_FLASH0.fd (QEMU).
     #[arg(long)]
     firmware: Option<PathBuf>,
 
-    /// Use authorized local payloads containing boot/ instead of pinned RPMs.
+    /// Override SBSA_FLASH1.fd alongside --firmware for QEMU.
+    #[arg(long, requires = "firmware")]
+    firmware_vars: Option<PathBuf>,
+
+    /// Use authorized local payloads containing boot/ (required for ARM64).
     #[arg(long)]
     boot_artifacts: Option<PathBuf>,
 
@@ -73,15 +77,37 @@ impl IntoPipeline for IncubatorCli {
     fn into_pipeline(self, backend_hint: PipelineBackendHint) -> anyhow::Result<Pipeline> {
         let working_dir = std::env::current_dir().context("getting Incubator working directory")?;
         let source_profile = read_source_profile(&self.profile)?;
+        let source =
+            flowey_lib_hvlite::_jobs::local_run_incubator::parse_source_profile(&source_profile)?;
+        let qemu_tcg = source["incubator"]["type"].as_str() == Some("qemu-tcg");
         anyhow::ensure!(
             matches!(backend_hint, PipelineBackendHint::Local)
                 && matches!(FlowPlatform::host(backend_hint), FlowPlatform::Linux(_))
-                && matches!(FlowArch::host(backend_hint), FlowArch::X86_64),
-            "incubator provisioning currently requires a local x64 Linux host with KVM"
+                && (qemu_tcg || matches!(FlowArch::host(backend_hint), FlowArch::X86_64)),
+            "incubator provisioning requires a local Linux host; OpenVMM requires x64 with KVM"
         );
+        anyhow::ensure!(
+            if qemu_tcg {
+                self.firmware.is_some() == self.firmware_vars.is_some()
+            } else {
+                self.firmware_vars.is_none()
+            },
+            "QEMU firmware overrides require both --firmware and --firmware-vars; OpenVMM does not use --firmware-vars"
+        );
+        if qemu_tcg {
+            anyhow::ensure!(
+                self.boot_artifacts.is_some(),
+                "ARM64 MSHV requires --boot-artifacts with authorized Hyper-V and lxhvloader.dll"
+            );
+        }
         let kernel = self.kernel.as_deref().map(existing_file).transpose()?;
         let initrd = self.initrd.as_deref().map(existing_file).transpose()?;
         let firmware = self.firmware.as_deref().map(existing_file).transpose()?;
+        let firmware_vars = self
+            .firmware_vars
+            .as_deref()
+            .map(existing_file)
+            .transpose()?;
         let boot_artifacts = self
             .boot_artifacts
             .map(|path| {
@@ -137,6 +163,7 @@ impl IntoPipeline for IncubatorCli {
                     kernel,
                     initrd,
                     firmware,
+                    firmware_vars,
                     boot_artifacts,
                     share,
                     dir,

@@ -675,8 +675,9 @@ impl<T: PetriVmmBackend> PetriVmBuilder<T> {
                 guest: UefiGuest::Mshv(_),
                 ..
             } => anyhow::ensure!(
-                artifacts.arch == MachineArch::X86_64,
-                "mshv boot requires x86-64 UEFI"
+                artifacts.arch == MachineArch::X86_64
+                    || (artifacts.arch == MachineArch::Aarch64 && T::SUPPORTS_CPU_EMULATION),
+                "mshv boot requires x86-64 UEFI or an AArch64 emulation backend"
             ),
             Firmware::OpenhclUefi {
                 guest: UefiGuest::Mshv(_),
@@ -1190,6 +1191,7 @@ impl<T: PetriVmmBackend> PetriVmBuilder<T> {
         }
 
         let builder = if let Some(boot_drive) = self.config.firmware.boot_drive(
+            self.config.arch,
             self.use_virtio_vsock,
             self.resources.prebuilt_initrd.as_ref(),
         )? {
@@ -3829,6 +3831,7 @@ impl Firmware {
 
     fn boot_drive(
         &self,
+        arch: MachineArch,
         use_virtio_vsock: bool,
         prepared: Option<&PetriInitrd>,
     ) -> anyhow::Result<Option<Drive>> {
@@ -3843,7 +3846,7 @@ impl Firmware {
         {
             return Ok(Some(Drive::new(
                 Some(
-                    boot.build(use_virtio_vsock, prepared)
+                    boot.build(arch, use_virtio_vsock, prepared)
                         .context("composing mshv boot disk")?,
                 ),
                 false,
@@ -3915,7 +3918,8 @@ impl PcatGuest {
 #[derive(Debug, Clone)]
 pub enum UefiGuest {
     /// Compose an mshv root-partition boot disk from resolved artifacts and a
-    /// prepared initrd. Requires x86-64 UEFI without OpenHCL.
+    /// prepared initrd. Supports x86-64 OpenVMM and experimental AArch64 QEMU
+    /// UEFI, without OpenHCL.
     Mshv(MshvBoot),
     /// Mount a VHD as the boot drive.
     Vhd(BootImageConfig<boot_image_type::Vhd>),

@@ -1,8 +1,9 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
-//! Build the development-only x64 mshv UEFI host boot application.
+//! Build the development-only mshv UEFI host boot application.
 
+use crate::common::CommonArch;
 use crate::common::CommonProfile;
 use flowey::node::prelude::*;
 use flowey_lib_common::run_cargo_build::CargoCrateType;
@@ -19,6 +20,7 @@ impl Artifact for MshvHostBootOutput {}
 
 flowey_request! {
     pub struct Request {
+        pub arch: CommonArch,
         pub profile: CommonProfile,
         pub host_boot: WriteVar<MshvHostBootOutput>,
     }
@@ -34,8 +36,16 @@ impl SimpleFlowNode for Node {
     }
 
     fn process_request(request: Self::Request, ctx: &mut NodeCtx<'_>) -> anyhow::Result<()> {
-        let Request { profile, host_boot } = request;
-        let target = "x86_64-unknown-uefi".parse()?;
+        let Request {
+            arch,
+            profile,
+            host_boot,
+        } = request;
+        let target = match arch {
+            CommonArch::X86_64 => "x86_64-unknown-uefi",
+            CommonArch::Aarch64 => "aarch64-unknown-uefi",
+        }
+        .parse()?;
         let output = ctx.reqv(|output| crate::run_cargo_build::Request {
             crate_name: "mshv_host_boot".into(),
             out_name: "mshv_host_boot".into(),

@@ -66,6 +66,7 @@ pub mod install_git_credential_manager;
 pub mod install_openvmm_rust_build_essential;
 pub mod install_vmm_tests_external_deps;
 pub mod resolve_mshv_boot_artifacts;
+pub mod resolve_mshv_support;
 pub mod resolve_openhcl_kernel_package;
 pub mod resolve_openvmm_deps;
 pub mod resolve_openvmm_qemu;
