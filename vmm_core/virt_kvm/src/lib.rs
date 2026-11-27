@@ -203,6 +203,12 @@ struct KvmPartitionInner {
     #[cfg(guest_arch = "x86_64")]
     mce_cmci_supported: bool,
 
+    /// Whether KVM runs on Intel's VMX, as on an Intel host, rather than on
+    /// AMD's SVM. Only KVM's VMX code has `IA32_FEATURE_CONTROL`, so a VP has
+    /// that MSR there alone, whatever vendor the guest's CPUID names.
+    #[cfg(guest_arch = "x86_64")]
+    host_vmx: bool,
+
     /// Whether KVM may run LAPIC timers on the VMX preemption timer, whose
     /// expiry it does not record while a VP is outside guest mode.
     #[cfg(guest_arch = "x86_64")]

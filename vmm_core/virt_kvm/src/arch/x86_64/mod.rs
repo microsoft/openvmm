@@ -746,6 +746,7 @@ impl ProtoPartition for KvmProtoPartition<'_> {
             cpuid,
             reserved_vps_per_socket: self.config.processor_topology.reserved_vps_per_socket(),
             mce_cmci_supported: x86defs::McgCap::from(self.supported_mce_cap).cmci_p(),
+            host_vmx: !kvm_support.svm,
             lapic_preemption_timer: lapic_timer::kvm_may_use_preemption_timer(),
             smm_address_space,
             synic_ports: Default::default(),
@@ -1145,11 +1146,12 @@ impl virt::BindProcessor for KvmProcessorBinder {
             hv1_emulator::x86::MISC_ENABLE.into(),
         )])?;
 
-        // Set IA32_FEATURE_CONTROL on Intel processors. KVM initializes
-        // this MSR to 0; set the lock bit (as Hyper-V does) so that the
-        // MSR reads as locked, and enable VMX outside SMX if the guest
-        // has VMX in CPUID.
-        if self.partition.caps.vendor.is_intel_compatible() {
+        // Set IA32_FEATURE_CONTROL for a guest whose CPUID names Intel. KVM
+        // initializes this MSR to 0; set the lock bit (as Hyper-V does) so
+        // that the MSR reads as locked, and enable VMX outside SMX if the
+        // guest has VMX in CPUID. Only KVM on VMX has the MSR: KVM on SVM, as
+        // on an AMD host, refuses the write whatever the guest's vendor.
+        if self.partition.host_vmx && self.partition.caps.vendor.is_intel_compatible() {
             let ecx = x86defs::cpuid::VersionAndFeaturesEcx::from(
                 self.partition
                     .cpuid
@@ -2813,5 +2815,105 @@ mod kvm_tests {
             hlt_wakeups(|partition| send_msi(partition, 0xfee0_0000, 0, (3 << 8) | 0x40)),
             1
         );
+    }
+}
+
+/// Tests against the host's KVM, with a partition built as a VMM builds one,
+/// whose CPUID can name another vendor than the host's.
+#[cfg(test)]
+mod vendor_kvm_tests {
+    use crate::Kvm;
+    use guestmem::GuestMemory;
+    use pal_async::DefaultPool;
+    use test_with_tracing::test;
+    use virt::BindProcessor;
+    use virt::CpuidLeaf;
+    use virt::Hypervisor;
+    use virt::PartitionConfig;
+    use virt::ProtoPartition;
+    use virt::ProtoPartitionConfig;
+    use vm_topology::memory::MemoryLayout;
+    use vm_topology::processor::TopologyBuilder;
+    use vmcore::vmtime::VmTime;
+    use vmcore::vmtime::VmTimeKeeper;
+    use x86defs::cpuid::Vendor;
+    use x86defs::vmx::Ia32FeatureControl;
+
+    const RAM_LEN: u64 = 0x10_0000;
+
+    /// Returns the vendor of the host's CPU, which KVM's supported CPUID names.
+    fn host_vendor() -> Vendor {
+        let leaf = kvm::Kvm::new()
+            .unwrap()
+            .supported_cpuid()
+            .unwrap()
+            .into_iter()
+            .find(|entry| entry.function == 0)
+            .unwrap();
+        Vendor::from_ebx_ecx_edx(leaf.ebx, leaf.ecx, leaf.edx)
+    }
+
+    /// Binds the VP of a partition whose CPUID names `vendor`, as a VMM's
+    /// CPUID leaves can, and returns the VP's IA32_FEATURE_CONTROL, or `None`
+    /// if KVM has no such MSR.
+    fn feature_control_after_bind(vendor: Vendor) -> Option<u64> {
+        DefaultPool::run_with(async |driver| {
+            let keeper = VmTimeKeeper::new(&driver, VmTime::from_100ns(0));
+            let vmtime = keeper.builder().build(&driver).await.unwrap();
+            let topology = TopologyBuilder::new_x86().build(1).unwrap();
+            let mem_layout = MemoryLayout::new(RAM_LEN, &[], &[], &[], None).unwrap();
+            let guest_memory = GuestMemory::allocate(RAM_LEN as usize);
+            let (ebx, ecx, edx) = vendor.to_ebx_ecx_edx();
+            let (_partition, mut binders) = Kvm::new()
+                .unwrap()
+                .new_partition(ProtoPartitionConfig {
+                    processor_topology: &topology,
+                    hv_config: None,
+                    vmtime: &vmtime,
+                    isolation: virt::ProtoPartitionIsolation::None,
+                    nested_virt: false,
+                    user_mode_memory_faults: false,
+                    lazy_memory_registration: false,
+                    time_abi: None,
+                })
+                .unwrap()
+                .build(PartitionConfig {
+                    mem_layout: &mem_layout,
+                    guest_memory: &guest_memory,
+                    // The vendor of leaf 0, which keeps KVM's highest leaf.
+                    cpuid: &[CpuidLeaf::new(0, [0, ebx, ecx, edx]).masked([0, !0, !0, !0])],
+                    vtl0_alias_map: None,
+                    fault_resolver: None,
+                })
+                .unwrap();
+            let vp = binders[0].bind().unwrap();
+            let mut value = [0];
+            vp.kvm
+                .get_msrs(&[x86defs::X86X_IA32_MSR_FEATURE_CONTROL], &mut value)
+                .ok()
+                .map(|()| value[0])
+        })
+    }
+
+    /// A VP whose CPUID names Intel binds on any host. Where KVM runs on VMX,
+    /// as on an Intel host, the bind locks its IA32_FEATURE_CONTROL, without
+    /// VMX, which a partition without nested virtualization does not give the
+    /// guest. KVM on SVM, as on an AMD host, has no such MSR and refuses a
+    /// write of it, so the bind leaves it alone there: it used to set it for
+    /// every such VP, and failed on an AMD host.
+    #[test]
+    #[ignore = "requires /dev/kvm"]
+    fn a_vp_whose_cpuid_names_intel_binds_on_any_host() {
+        let feature_control = feature_control_after_bind(Vendor::INTEL);
+        if host_vendor().is_amd_compatible() {
+            // KVM refuses a read of the MSR, or reads it as 0 where it lists
+            // it, as under a hypervisor that lets the host read it.
+            assert_eq!(feature_control.unwrap_or(0), 0);
+        } else {
+            assert_eq!(
+                feature_control,
+                Some(Ia32FeatureControl::new().with_locked(true).into())
+            );
+        }
     }
 }
