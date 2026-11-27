@@ -43,6 +43,7 @@ zerocopy = { workspace = true, features = ["alloc"] }
 [dev-dependencies]
 disk_prwrap.workspace = true
 disklayer_ram.workspace = true
+inspect = { workspace = true, features = ["initiate"] }
 user_driver.workspace = true
 
 [lints]
