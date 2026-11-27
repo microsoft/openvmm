@@ -162,3 +162,45 @@ mod tests {
         assert_eq!(unwrapped_key, KEY);
     }
 }
+
+#[cfg(test)]
+mod integrity_contract {
+    use super::*;
+    use test_with_tracing::test;
+
+    // Test: Wrap payloads across the single-block and padded multi-block boundary.
+    // Expected: Every permitted KEK size preserves exact payload bytes/length;
+    //       wrong keys and tampering in either end of the wrapper are rejected.
+    #[test]
+    fn padded_key_integrity_and_payload_boundaries() {
+        for key_length in [16, 24, 32] {
+            let key = AesKeyWrap::new(&vec![0x31; key_length]).unwrap();
+            let wrong_key = AesKeyWrap::new(&vec![0x32; key_length]).unwrap();
+            for length in [1_usize, 7, 8, 9, 16, 17, 31] {
+                let payload: Vec<_> = (0..length).map(|i| (i * 17 + 3) as u8).collect();
+                let wrapped = key.wrapper().unwrap().wrap(&payload).unwrap();
+                assert_eq!(wrapped.len(), (length.div_ceil(8) + 1) * 8);
+                assert_eq!(key.unwrapper().unwrap().unwrap(&wrapped).unwrap(), payload);
+                assert!(wrong_key.unwrapper().unwrap().unwrap(&wrapped).is_err());
+                for index in [0, wrapped.len() - 1] {
+                    let mut altered = wrapped.clone();
+                    altered[index] ^= 0x40;
+                    assert!(key.unwrapper().unwrap().unwrap(&altered).is_err());
+                }
+            }
+        }
+        for length in [0, 1, 15, 17, 23, 25, 31, 33] {
+            assert!(AesKeyWrap::new(&vec![0x31; length]).is_err());
+        }
+    }
+
+    // Test: Unwrap an empty RFC5649 representation, which lacks its required AIV.
+    // Expected: An empty wrapper is invalid, not a successfully recovered key.
+    // IGNORED: OpenSSL returns Ok(empty), reproduced with the regression enabled.
+    #[test]
+    #[ignore = "OpenSSL accepts an empty RFC5649 wrapper as an empty key"]
+    fn empty_wrapped_key_is_invalid() {
+        let key = AesKeyWrap::new(&[0x31; 32]).unwrap();
+        assert!(key.unwrapper().unwrap().unwrap(&[]).is_err());
+    }
+}

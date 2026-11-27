@@ -112,6 +112,7 @@ signature = { workspace = true, features = ["alloc"] }
 x509-cert.workspace = true
 
 [dev-dependencies]
+test_with_tracing.workspace = true
 der = { workspace = true, features = ["derive", "alloc"] }
 hex.workspace = true
 pkcs1.workspace = true

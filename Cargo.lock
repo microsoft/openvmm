@@ -1161,6 +1161,7 @@ dependencies = [
  "sha2",
  "signature",
  "symcrypt",
+ "test_with_tracing",
  "thiserror 2.0.16",
  "windows 0.62.0",
  "windows-result 0.4.0",
