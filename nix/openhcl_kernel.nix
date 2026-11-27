@@ -1,7 +1,7 @@
 { system, stdenv, fetchzip, targetArch ? null, is_dev ? false, is_cvm ? false }:
 
 let
-  version = if is_dev then "deprecated" else "6.18.37.7";
+  version = if is_dev then "deprecated" else "7.3.4.1.test";
   # Allow explicit override of architecture, otherwise derive from host system
   # Note: targetArch uses "x86_64"/"aarch64", but URLs use "x64"/"arm64"
   arch = if targetArch == "x86_64" then "x64"
@@ -18,11 +18,11 @@ let
   hashes = {
     hcl-main = {
       std = {
-        x64 = "sha256-QmsjLDAbytTgk4LosaK1ePiXLAGy0SEDN8qQLHb7LUY=";
-        arm64 = "sha256-Q0P+FuhubXtRh/ockNscPRwz39XuyuPUUEj7UJ/I3g4=";
+        x64 = "sha256-xaHexdkcb4g/0BdzQ0mY1ksq7tKsr8n7IuL2fakD6Tg=";
+        arm64 = "sha256-jgEs9b1121JYjwFoDOlfVxIcdpBdEX5ASPVOGzz87Gs=";
       };
       cvm = {
-        x64 = "sha256-AVCLIEGDSadKvfIlmRjsW+fp55e+Lap+9fatR07ghsU=";
+        x64 = "sha256-FvfS8/RKq1hkMUsn35gkp8RK8Y/JiPToIrP2aigjeAw=";
         arm64 = throw "openhcl-kernel: cvm arm64 variant not available";
       };
     };
