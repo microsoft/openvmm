@@ -168,6 +168,9 @@ enum RelayTdisp {
     Assume(bool),
     /// Probe the device, as the relay does when the host offers it.
     Probe,
+    /// Probe the device with unattested devices allowed, as the SIVM policy
+    /// does.
+    ProbeUnattested,
 }
 
 /// Brings up a VPCI bus with an emulated TDISP-capable device on it and wraps
@@ -237,15 +240,22 @@ async fn connect_relay_with(
             .await
             .unwrap();
 
+    // Only VBS may allow unattested devices.
+    let allow_unattested_devices = matches!(relay_tdisp, RelayTdisp::ProbeUnattested);
+    let isolation_type = if allow_unattested_devices {
+        IsolationType::Vbs
+    } else {
+        IsolationType::Snp
+    };
     let (device, _removed) = devices
         .into_iter()
         .next()
         .unwrap()
         .init(
             Arc::new(TdispNoopResourceValidator::new()),
-            IsolationType::Snp,
+            isolation_type,
             Vtl::Vtl0,
-            false,
+            allow_unattested_devices,
         )
         .await
         .unwrap();
@@ -254,13 +264,13 @@ async fn connect_relay_with(
     let tdisp_operations = TdispOperationCount::default();
     let tdisp_capable = match relay_tdisp {
         RelayTdisp::Assume(tdisp_capable) => tdisp_capable,
-        RelayTdisp::Probe => {
+        RelayTdisp::Probe | RelayTdisp::ProbeUnattested => {
             super::probe_tdisp_capable(
                 &client,
                 &device,
                 Guid::new_random(),
                 &tdisp_operations,
-                false,
+                allow_unattested_devices,
             )
             .await
         }
@@ -555,4 +565,35 @@ async fn downlevel_host_never_sees_tdisp_commands(driver: DefaultDriver) {
 
     assert_eq!(t.relay.lock().tdisp_operations.get(), 0);
     assert_eq!(t.device.tdisp().tdi_state().await, TdispTdiState::Unlocked);
+}
+
+/// Ensures that with unattested devices allowed, a device on a host that only
+/// negotiates VPCI protocol `VB` and implements no TDISP still goes through the
+/// TDISP flow: probing marks it TDISP capable, and enabling MMIO brings the TDI
+/// to Run. The host would reject any TDISP command, so neither step may need
+/// one.
+#[async_test]
+async fn unattested_device_on_downlevel_host_reaches_run(driver: DefaultDriver) {
+    let t = connect_relay_with(
+        &driver,
+        TestHost {
+            offers_tdisp: false,
+            accepts_rb: false,
+        },
+        RelayTdisp::ProbeUnattested,
+    )
+    .await;
+
+    assert_eq!(
+        t.client.protocol_version(),
+        vpci_protocol::ProtocolVersion::VB
+    );
+    assert!(t.relay.lock().tdisp_capable);
+
+    let offset = HeaderType00::STATUS_COMMAND.0;
+    let activate = t.deferred_write(offset, command(true), PciConfigByteEnable::LOW_WORD);
+    t.drive(activate.write_future()).await.unwrap();
+
+    assert_eq!(t.device.tdisp().tdi_state().await, TdispTdiState::Run);
+    assert_eq!(t.read(offset) & 0xffff, command(true));
 }
