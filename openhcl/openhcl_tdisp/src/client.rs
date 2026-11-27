@@ -1773,4 +1773,139 @@ mod tests {
             assert!(validator.unblocked_mmio_ranges().is_empty());
         });
     }
+
+    /// A validator whose first DMA unblock fails, and that otherwise behaves
+    /// like the no-op validator.
+    struct FailFirstDmaUnblock {
+        inner: crate::noop::TdispNoopResourceValidator,
+        dma_unblock_attempts: std::sync::atomic::AtomicUsize,
+    }
+
+    impl TdispResourceValidationInterface for FailFirstDmaUnblock {
+        fn on_pre_bind(&self, target_vtl: Vtl, device_id: u16) -> anyhow::Result<()> {
+            self.inner.on_pre_bind(target_vtl, device_id)
+        }
+
+        fn on_pre_start(&self, target_vtl: Vtl, device_id: u16) -> anyhow::Result<()> {
+            self.inner.on_pre_start(target_vtl, device_id)
+        }
+
+        fn on_post_start(&self, target_vtl: Vtl, device_id: u16) -> anyhow::Result<()> {
+            self.inner.on_post_start(target_vtl, device_id)
+        }
+
+        fn get_tsm_tdi_state(
+            &self,
+            target_vtl: Vtl,
+            device_id: u16,
+        ) -> anyhow::Result<Option<TdispTdiState>> {
+            self.inner.get_tsm_tdi_state(target_vtl, device_id)
+        }
+
+        fn tdisp_set_tdi_report(&self, device_id: u16, report: &TdiReportStruct) {
+            self.inner.tdisp_set_tdi_report(device_id, report)
+        }
+
+        fn tdisp_clear_tdi_report(&self, device_id: u16) {
+            self.inner.tdisp_clear_tdi_report(device_id)
+        }
+
+        fn tdisp_unblock_mmio<'a>(
+            &'a self,
+            target_vtl: Vtl,
+            device_id: u16,
+            base_gpa: u64,
+            base_offset: u32,
+            length_in_bytes: u64,
+            range_id: u16,
+        ) -> Pin<Box<dyn Future<Output = anyhow::Result<()>> + Send + Sync + 'a>> {
+            self.inner.tdisp_unblock_mmio(
+                target_vtl,
+                device_id,
+                base_gpa,
+                base_offset,
+                length_in_bytes,
+                range_id,
+            )
+        }
+
+        fn tdisp_unblock_dma(&self, target_vtl: Vtl, device_id: u16) -> anyhow::Result<()> {
+            let attempt = self
+                .dma_unblock_attempts
+                .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            if attempt == 0 {
+                anyhow::bail!("test validator failed the first DMA unblock");
+            }
+            self.inner.tdisp_unblock_dma(target_vtl, device_id)
+        }
+
+        fn tdisp_block_mmio<'a>(
+            &'a self,
+            target_vtl: Vtl,
+            device_id: u16,
+            base_gpa: u64,
+            base_offset: u32,
+            length_in_bytes: u64,
+            range_id: u16,
+        ) -> Pin<Box<dyn Future<Output = anyhow::Result<()>> + Send + Sync + 'a>> {
+            self.inner.tdisp_block_mmio(
+                target_vtl,
+                device_id,
+                base_gpa,
+                base_offset,
+                length_in_bytes,
+                range_id,
+            )
+        }
+
+        fn tdisp_block_dma(&self, target_vtl: Vtl, device_id: u16) -> anyhow::Result<()> {
+            self.inner.tdisp_block_dma(target_vtl, device_id)
+        }
+    }
+
+    /// A failed DMA authorization for an unattested device leaves DMA blocked,
+    /// so the next activation, after the no-op unbind, tries again.
+    #[test]
+    fn unattested_dma_authorization_retries_after_failure() {
+        let validator = Arc::new(FailFirstDmaUnblock {
+            inner: crate::noop::TdispNoopResourceValidator::new(),
+            dma_unblock_attempts: Default::default(),
+        });
+        let mut state = TdispClientState::new(
+            Box::new(PanickingTransport),
+            validator.clone(),
+            IsolationType::Vbs,
+            Vtl::Vtl0,
+            [true, false, false, false, false, false],
+            true,
+        );
+        futures::executor::block_on(async {
+            let info = state.query_capabilities().await.unwrap();
+            state.attest(info).await.unwrap();
+            assert!(
+                state
+                    .on_mmio_reconfigured(0, 0x1000_0000, 0x1000)
+                    .await
+                    .is_err()
+            );
+            assert!(!state.mutable_state.dma_unblocked);
+            assert!(!validator.inner.dma_unblocked());
+
+            state.unbind(TdispGuestUnbindReason::Graceful).await;
+            let info = state.query_capabilities().await.unwrap();
+            state.attest(info).await.unwrap();
+            state
+                .on_mmio_reconfigured(0, 0x1000_0000, 0x1000)
+                .await
+                .unwrap();
+            assert!(state.mutable_state.dma_unblocked);
+            assert!(validator.inner.dma_unblocked());
+            assert_eq!(
+                validator
+                    .dma_unblock_attempts
+                    .load(std::sync::atomic::Ordering::Relaxed),
+                2
+            );
+        });
+    }
 }
