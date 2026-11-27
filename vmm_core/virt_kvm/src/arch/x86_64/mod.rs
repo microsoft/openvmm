@@ -1150,7 +1150,8 @@ impl virt::BindProcessor for KvmProcessorBinder {
         // initializes this MSR to 0; set the lock bit (as Hyper-V does) so
         // that the MSR reads as locked, and enable VMX outside SMX if the
         // guest has VMX in CPUID. Only KVM on VMX has the MSR: KVM on SVM, as
-        // on an AMD host, refuses the write whatever the guest's vendor.
+        // on an AMD host, refuses the write whatever the guest's vendor,
+        // unless `kvm.ignore_msrs` has it ignore the write instead.
         if self.partition.host_vmx && self.partition.caps.vendor.is_intel_compatible() {
             let ecx = x86defs::cpuid::VersionAndFeaturesEcx::from(
                 self.partition
@@ -2898,16 +2899,18 @@ mod vendor_kvm_tests {
     /// A VP whose CPUID names Intel binds on any host. Where KVM runs on VMX,
     /// as on an Intel host, the bind locks its IA32_FEATURE_CONTROL, without
     /// VMX, which a partition without nested virtualization does not give the
-    /// guest. KVM on SVM, as on an AMD host, has no such MSR and refuses a
-    /// write of it, so the bind leaves it alone there: it used to set it for
-    /// every such VP, and failed on an AMD host.
+    /// guest. KVM on SVM, as on an AMD host, has no such MSR, and refuses a
+    /// write of it unless `kvm.ignore_msrs` is set, so the bind leaves it
+    /// alone there: it used to set it for every such VP, and failed on an AMD
+    /// host whose `kvm.ignore_msrs` is off, as it is by default.
     #[test]
     #[ignore = "requires /dev/kvm"]
     fn a_vp_whose_cpuid_names_intel_binds_on_any_host() {
         let feature_control = feature_control_after_bind(Vendor::INTEL);
         if host_vendor().is_amd_compatible() {
-            // KVM refuses a read of the MSR, or reads it as 0 where it lists
-            // it, as under a hypervisor that lets the host read it.
+            // KVM refuses a read of the MSR, or reads it as 0 where
+            // `kvm.ignore_msrs` is set or where it lists the MSR, as under a
+            // hypervisor that lets the host read it.
             assert_eq!(feature_control.unwrap_or(0), 0);
         } else {
             assert_eq!(
