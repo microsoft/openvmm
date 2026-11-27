@@ -59,6 +59,9 @@ const SCRATCH_OFFSET: u16 = 0x40;
 /// The VTOM most SNP platforms report, which TDISP setup expects to be present.
 const TEST_VTOM: u64 = 0x400000000000;
 
+/// The size of the emulated host device's only BAR, BAR0.
+const BAR0_SIZE: u32 = 0x1000;
+
 /// The config space the emulated host device presents, plus a log of everything
 /// the relay has pushed through to it.
 #[derive(Default)]
@@ -101,11 +104,15 @@ impl PciConfigSpace for TestHostDevice {
     fn pci_cfg_write(&mut self, offset: u16, value: ByteEnabledDwordWrite) -> IoResult {
         let mut cfg = self.cfg.lock();
         cfg.writes.push((offset, value.extract()));
-        // The device implements no BARs, so BAR writes are dropped and the
-        // registers keep reading back as zero. The client probes them for size
-        // during bring-up and would otherwise see the probe value itself.
-        if !(HeaderType00::BAR0.0..HeaderType00::BAR5.0 + 4).contains(&offset) {
-            let current = cfg.registers.get(&offset).copied().unwrap_or(0);
+        let current = cfg.registers.get(&offset).copied().unwrap_or(0);
+        if offset == HeaderType00::BAR0.0 {
+            // BAR0 is a 32-bit memory BAR whose low address bits read back as
+            // zero, which is how the client's size probe learns its size.
+            cfg.registers
+                .insert(offset, value.merge(current) & !(BAR0_SIZE - 1));
+        } else if !(HeaderType00::BAR0.0..HeaderType00::BAR5.0 + 4).contains(&offset) {
+            // The other BARs aren't implemented, so writes to them are dropped
+            // and they keep reading back as zero.
             cfg.registers.insert(offset, value.merge(current));
         }
         IoResult::Ok
@@ -144,6 +151,8 @@ struct TestRelay {
     relay: Mutex<RelayedVpciDevice>,
     /// The client's handle to the same device, for checking TDI state.
     device: Arc<VpciDevice>,
+    /// The device's resource validator, for checking whether DMA is unblocked.
+    validator: Arc<TdispNoopResourceValidator>,
     /// The emulated host device's config space and write log.
     cfg: Arc<Mutex<HostConfigSpace>>,
     /// Keeps the VPCI channel server running for the lifetime of the test.
@@ -168,6 +177,9 @@ enum RelayTdisp {
     Assume(bool),
     /// Probe the device, as the relay does when the host offers it.
     Probe,
+    /// Probe the device with unattested devices allowed, as the SIVM policy
+    /// does.
+    ProbeUnattested,
 }
 
 /// Brings up a VPCI bus with an emulated TDISP-capable device on it and wraps
@@ -237,14 +249,23 @@ async fn connect_relay_with(
             .await
             .unwrap();
 
+    // Only VBS may allow unattested devices.
+    let allow_unattested_devices = matches!(relay_tdisp, RelayTdisp::ProbeUnattested);
+    let isolation_type = if allow_unattested_devices {
+        IsolationType::Vbs
+    } else {
+        IsolationType::Snp
+    };
+    let validator = Arc::new(TdispNoopResourceValidator::new());
     let (device, _removed) = devices
         .into_iter()
         .next()
         .unwrap()
         .init(
-            Arc::new(TdispNoopResourceValidator::new()),
-            IsolationType::Snp,
+            validator.clone(),
+            isolation_type,
             Vtl::Vtl0,
+            allow_unattested_devices,
         )
         .await
         .unwrap();
@@ -253,9 +274,15 @@ async fn connect_relay_with(
     let tdisp_operations = TdispOperationCount::default();
     let tdisp_capable = match relay_tdisp {
         RelayTdisp::Assume(tdisp_capable) => tdisp_capable,
-        RelayTdisp::Probe => {
-            super::probe_tdisp_capable(&client, &device, Guid::new_random(), &tdisp_operations)
-                .await
+        RelayTdisp::Probe | RelayTdisp::ProbeUnattested => {
+            super::probe_tdisp_capable(
+                &client,
+                &device,
+                Guid::new_random(),
+                &tdisp_operations,
+                allow_unattested_devices,
+            )
+            .await
         }
     };
 
@@ -273,6 +300,7 @@ async fn connect_relay_with(
             tdisp_operations,
         }),
         device,
+        validator,
         cfg,
         _server: server,
         client,
@@ -548,4 +576,43 @@ async fn downlevel_host_never_sees_tdisp_commands(driver: DefaultDriver) {
 
     assert_eq!(t.relay.lock().tdisp_operations.get(), 0);
     assert_eq!(t.device.tdisp().tdi_state().await, TdispTdiState::Unlocked);
+}
+
+/// Ensures that with unattested devices allowed, a device on a host that only
+/// negotiates VPCI protocol `VB` and implements no TDISP still goes through the
+/// TDISP flow: probing marks it TDISP capable, and enabling MMIO with a BAR
+/// placed brings the TDI to Run and unblocks DMA. The host would reject any
+/// TDISP command, so neither step may need one.
+#[async_test]
+async fn unattested_device_on_downlevel_host_unblocks_dma(driver: DefaultDriver) {
+    let t = connect_relay_with(
+        &driver,
+        TestHost {
+            offers_tdisp: false,
+            accepts_rb: false,
+        },
+        RelayTdisp::ProbeUnattested,
+    )
+    .await;
+
+    assert_eq!(
+        t.client.protocol_version(),
+        vpci_protocol::ProtocolVersion::VB
+    );
+    assert!(t.relay.lock().tdisp_capable);
+
+    // Place BAR0, so that enabling MMIO activates it.
+    assert!(matches!(
+        t.write(HeaderType00::BAR0.0, 0x1000_0000, PciConfigByteEnable::FULL),
+        IoResult::Ok
+    ));
+    assert!(!t.validator.dma_unblocked());
+
+    let offset = HeaderType00::STATUS_COMMAND.0;
+    let activate = t.deferred_write(offset, command(true), PciConfigByteEnable::LOW_WORD);
+    t.drive(activate.write_future()).await.unwrap();
+
+    assert_eq!(t.device.tdisp().tdi_state().await, TdispTdiState::Run);
+    assert_eq!(t.read(offset) & 0xffff, command(true));
+    assert!(t.validator.dma_unblocked());
 }

@@ -91,6 +91,10 @@ pub struct VpciRelayOptions {
     /// When set, the relay will exercise a mock TDISP flow for emulated TDISP
     /// devices produced by OpenVMM tests.
     pub test_tdisp_flow: bool,
+    /// Allow devices without TDISP attestation. The TDISP flow then skips the
+    /// steps that need it, including the check for a VPCI protocol that carries
+    /// TDISP.
+    pub allow_unattested_devices: bool,
 }
 
 /// Virtual PCI relay.
@@ -433,12 +437,21 @@ impl VpciRelay {
         // is running in. Validators take care of platform firmware operations
         // specific to the isolation technology in use. Test environments use
         // mocked firmware interfaces.
-        let resource_validator =
-            new_resource_validator(self.isolation_type, self.vtom, self.options.test_tdisp_flow)
-                .context("failed to create a TDISP resource validator")?;
+        let resource_validator = new_resource_validator(
+            self.isolation_type,
+            self.vtom,
+            instance_id,
+            self.options.test_tdisp_flow,
+        )
+        .context("failed to create a TDISP resource validator")?;
 
         let (vpci_device, removed) = vpci_device
-            .init(resource_validator, self.isolation_type, hvdef::Vtl::Vtl0)
+            .init(
+                resource_validator,
+                self.isolation_type,
+                hvdef::Vtl::Vtl0,
+                self.options.allow_unattested_devices,
+            )
             .await
             .context("failed to initialize vpci device")?;
         let vpci_device = Arc::new(vpci_device);
@@ -457,7 +470,14 @@ impl VpciRelay {
             // Do not mark the device TDISP capable because the test is already done.
             false
         } else {
-            probe_tdisp_capable(&vpci_client, &vpci_device, instance_id, &tdisp_operations).await
+            probe_tdisp_capable(
+                &vpci_client,
+                &vpci_device,
+                instance_id,
+                &tdisp_operations,
+                self.options.allow_unattested_devices,
+            )
+            .await
         };
 
         let device_name = format!("assigned_device:vpci-{instance_id}");
@@ -522,9 +542,10 @@ impl VpciRelay {
 
 /// Decides whether the relay treats a newly offered device as TDISP capable.
 /// Returns `true` only if the host negotiated a VPCI protocol that carries
-/// TDISP and the device reports TDISP capabilities matching the partition's
-/// isolation type. Any failure, including the host rejecting the query, makes
-/// the device non-TDISP rather than failing the device.
+/// TDISP, unless `allow_unattested_devices` is set, and the device reports TDISP
+/// capabilities matching the partition's isolation type. Any failure, including
+/// the host rejecting the query, makes the device non-TDISP rather than failing
+/// the device.
 ///
 /// The device is not attested here. Attestation is deferred until the guest
 /// first interacts with the device.
@@ -533,13 +554,15 @@ impl VpciRelay {
 /// * `vpci_device` - The device to probe.
 /// * `instance_id` - The bus instance id, for logging.
 /// * `tdisp_operations` - Records the probe if it sends anything to the host.
+/// * `allow_unattested_devices` - Allow devices without TDISP attestation.
 async fn probe_tdisp_capable(
     vpci_client: &VpciClient,
     vpci_device: &VpciDevice,
     instance_id: Guid,
     tdisp_operations: &TdispOperationCount,
+    allow_unattested_devices: bool,
 ) -> bool {
-    if vpci_client.protocol_version() < ProtocolVersion::RB {
+    if !allow_unattested_devices && vpci_client.protocol_version() < ProtocolVersion::RB {
         // TDISP support only exists from RB onward.
         tracing::info!(
             CVM_ALLOWED,

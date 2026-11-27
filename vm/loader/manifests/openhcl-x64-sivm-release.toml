@@ -7,15 +7,16 @@ guest_arch = "x64"
 # VBS isolation
 # ----------------------------------------------------------------------------
 [guest_configs.vbs]
-guest_svn = 1
+guest_svn = 13
 max_vtl = 2
 
 [guest_configs.vbs.isolation]
-enable_debug = true
+enable_debug = false
 
 [guest_configs.vbs.image.openhcl]
-command_line = "OPENHCL_CONFIDENTIAL_DEBUG=1"
-memory_page_count = 163840
+command_line = ""
+static_command_line = true
+memory_page_count = 16384
 memory_page_base = 32768
 uefi = true
 
@@ -30,3 +31,5 @@ custom_uefi_json = ""
 devices = "policies/devices.toml"
 allowed_pci_devices = ["nvidia-gpu"]
 vpci_relay = "must_be_on"
+# SIVM hosts don't support TDISP yet, so allow devices without TDISP attestation.
+allow_unattested_devices = true

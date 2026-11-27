@@ -7,6 +7,7 @@ rust-version.workspace = true
 edition.workspace = true
 
 [dependencies]
+guid.workspace = true
 hvdef.workspace = true
 inspect.workspace = true
 memory_range.workspace = true
@@ -20,7 +21,7 @@ anyhow.workspace = true
 futures.workspace = true
 tracing.workspace = true
 
-# Both validators talk to /dev/mshv_vtl, and SEV-TIO also to /dev/sev-guest.
+# The platform validators talk to mshv, and SEV-TIO also to /dev/sev-guest.
 [target.'cfg(target_os = "linux")'.dependencies]
 hcl.workspace = true
 sev_guest_device.workspace = true
