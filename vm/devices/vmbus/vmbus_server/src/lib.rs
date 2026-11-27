@@ -611,6 +611,7 @@ impl<T: SpawnDriver + Clone> VmbusServerBuilder<T> {
             message_port: self
                 .synic
                 .new_guest_message_port(redirect_vtl, 0, redirect_sint)?,
+            custom_message_port: None,
             synic: self.synic,
             hvsock_requests: 0,
             hvsock_send,
@@ -767,6 +768,8 @@ struct ServerTaskInner {
     redirect_vtl: Vtl,
     redirect_sint: u8,
     message_port: Box<dyn GuestMessagePort>,
+    // Preserve transport state and wakeups while a custom-target send is pending.
+    custom_message_port: Option<CustomMessagePort>,
     hvsock_requests: usize,
     hvsock_send: mesh::Sender<HvsockConnectRequest>,
     saved_state_notify: Option<mesh::Sender<SavedStateRequest>>,
@@ -818,6 +821,11 @@ struct Channel {
 
 struct ReservedState {
     message_port: Option<Box<dyn GuestMessagePort>>,
+    target: ConnectionTarget,
+}
+
+struct CustomMessagePort {
+    port: Box<dyn GuestMessagePort>,
     target: ConnectionTarget,
 }
 
@@ -1265,11 +1273,27 @@ impl ServerTask {
             // Try to send any pending messages while the VM is running.
             let has_pending_messages = self.server.has_pending_messages();
             let message_port = self.inner.message_port.as_mut();
+            let custom_message_port = &mut self.inner.custom_message_port;
+            let synic = self.inner.synic.as_ref();
+            let redirect_vtl = self.inner.redirect_vtl;
+            let redirect_sint = self.inner.redirect_sint;
             let mut flush_pending_messages =
                 OptionFuture::from((running_not_resetting && has_pending_messages).then(|| {
                     poll_fn(|cx| {
-                        self.server.poll_flush_pending_messages(|msg| {
-                            message_port.poll_post_message(cx, VMBUS_MESSAGE_TYPE, msg.data())
+                        self.server.poll_flush_pending_messages(|msg, target| {
+                            if let Some(target) = target {
+                                ServerTaskInner::poll_post_custom_message(
+                                    custom_message_port,
+                                    synic,
+                                    redirect_vtl,
+                                    redirect_sint,
+                                    target,
+                                    cx,
+                                    msg,
+                                )
+                            } else {
+                                message_port.poll_post_message(cx, VMBUS_MESSAGE_TYPE, msg.data())
+                            }
                         })
                     })
                     .fuse()
@@ -1717,8 +1741,8 @@ impl Notifier for ServerTaskInner {
         // If the server is paused, queue all messages, to avoid affecting synic
         // state during/after it has been saved or reset.
         //
-        // Note that messages to reserved channels or custom targets will be
-        // dropped. However, such messages should only be sent in response to
+        // Note that messages to reserved channels will be dropped. However,
+        // such messages should only be sent in response to
         // guest requests, which should not be processed while the server is
         // paused.
         //
@@ -1727,13 +1751,12 @@ impl Notifier for ServerTaskInner {
         // sending offer or revoke messages for new or revoked offers. This
         // would prevent the queue from growing without bound.
         if !self.running && !self.send_messages_while_stopped {
-            if !matches!(target, MessageTarget::Default) {
+            if matches!(target, MessageTarget::ReservedChannel(..)) {
                 tracelimit::error_ratelimited!(?target, "dropping message while paused");
             }
             return false;
         }
 
-        let mut port_storage;
         let port = match target {
             MessageTarget::Default => self.message_port.as_mut(),
             MessageTarget::ReservedChannel(offer_id, target) => {
@@ -1745,25 +1768,16 @@ impl Notifier for ServerTaskInner {
                 }
             }
             MessageTarget::Custom(target) => {
-                port_storage = match self.synic.new_guest_message_port(
+                return Self::poll_post_custom_message(
+                    &mut self.custom_message_port,
+                    self.synic.as_ref(),
                     self.redirect_vtl,
-                    target.vp,
-                    target.sint,
-                ) {
-                    Ok(port) => port,
-                    Err(err) => {
-                        tracing::error!(
-                            ?err,
-                            ?self.redirect_vtl,
-                            ?target,
-                            "could not create message port"
-                        );
-
-                        // There is no way to send the message.
-                        return true;
-                    }
-                };
-                port_storage.as_mut()
+                    self.redirect_sint,
+                    target,
+                    &mut std::task::Context::from_waker(std::task::Waker::noop()),
+                    message,
+                )
+                .is_ready();
             }
         };
 
@@ -1786,6 +1800,7 @@ impl Notifier for ServerTaskInner {
     }
 
     fn reset_complete(&mut self) {
+        self.custom_message_port = None;
         if let Some(monitor) = self.synic.monitor_support() {
             if let Err(err) = monitor.set_monitor_page(self.vtl, None) {
                 tracing::warn!(?err, "resetting monitor page failed")
@@ -1804,6 +1819,52 @@ impl Notifier for ServerTaskInner {
 }
 
 impl ServerTaskInner {
+    fn poll_post_custom_message(
+        custom_message_port: &mut Option<CustomMessagePort>,
+        synic: &dyn SynicPortAccess,
+        redirect_vtl: Vtl,
+        redirect_sint: u8,
+        mut target: ConnectionTarget,
+        cx: &mut std::task::Context<'_>,
+        message: &OutgoingMessage,
+    ) -> Poll<()> {
+        // Redirect the normal control SINT, but preserve explicit alternate SINTs.
+        if target.sint == VMBUS_SINT {
+            target.sint = redirect_sint;
+        }
+
+        if custom_message_port
+            .as_ref()
+            .is_none_or(|port| port.target != target)
+        {
+            *custom_message_port = None;
+            let port = match synic.new_guest_message_port(redirect_vtl, target.vp, target.sint) {
+                Ok(port) => port,
+                Err(err) => {
+                    tracelimit::error_ratelimited!(
+                        ?err,
+                        ?redirect_vtl,
+                        ?target,
+                        "could not create message port"
+                    );
+                    // There is no way to send the message.
+                    return Poll::Ready(());
+                }
+            };
+            *custom_message_port = Some(CustomMessagePort { port, target });
+        }
+
+        let result = custom_message_port
+            .as_mut()
+            .unwrap()
+            .port
+            .poll_post_message(cx, VMBUS_MESSAGE_TYPE, message.data());
+        if result.is_ready() {
+            *custom_message_port = None;
+        }
+        result
+    }
+
     fn open_channel(
         &mut self,
         offer_id: OfferId,
