@@ -248,6 +248,7 @@ fn parse(buf: &[u64]) -> Result<(PagedRange<'_>, &[u64]), Error> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use test_with_tracing::test;
 
     #[test]
     fn large_offset() {
@@ -264,5 +265,114 @@ mod tests {
         // validate() should not accept the buffer
         let err = MultiPagedRangeBuf::from_range_buffer(1, buf).unwrap_err();
         assert!(matches!(err, Error::OffsetTooLarge));
+    }
+
+    fn ranges(buffer: &MultiPagedRangeBuf) -> Vec<(usize, usize, Vec<u64>)> {
+        buffer
+            .into_iter()
+            .map(|range| (range.offset(), range.len(), range.gpns().to_vec()))
+            .collect()
+    }
+
+    // Test: Parse concatenated ranges with an unaligned page-spanning range.
+    // Expected: Offsets, lengths, and page numbers are preserved; trailing data is ignored.
+    #[test]
+    fn parses_multiple_ranges_and_trims_trailing_data() {
+        let encoded = vec![8, 10, (4090u64 << 32) | 16, 20, 30, u64::MAX];
+        assert_eq!(validate_gpa_ranges(2, &encoded).unwrap(), 5);
+        let buffer = MultiPagedRangeBuf::from_range_buffer(2, encoded.clone()).unwrap();
+        assert_eq!(buffer.range_count(), 2);
+        assert_eq!(buffer.range_buffer(), &encoded[..5]);
+        assert_eq!(
+            ranges(&buffer),
+            [(0, 8, vec![10]), (4090, 16, vec![20, 30])]
+        );
+        assert!(buffer.contiguous_aligned().is_none());
+    }
+
+    // Test: Parse truncated, empty, overflowing, and oversized-offset GPA ranges.
+    // Expected: Each malformed encoding returns the corresponding validation error.
+    #[test]
+    fn malformed_ranges_return_validation_errors() {
+        for (encoded, expected) in [
+            (vec![], Error::EmptyRange),
+            (vec![0], Error::EmptyByteCount),
+            (vec![4097, 1], Error::RangeTooSmall),
+            (vec![(4096u64 << 32) | 1, 1], Error::OffsetTooLarge),
+            (vec![u64::from(u32::MAX), 1], Error::Overflow),
+            (
+                vec![(4095u64 << 32) | u64::from(u32::MAX - 4095), 1],
+                Error::Overflow,
+            ),
+        ] {
+            let error = MultiPagedRangeBuf::from_range_buffer(1, encoded).unwrap_err();
+            assert_eq!(
+                core::mem::discriminant(&error),
+                core::mem::discriminant(&expected),
+                "expected {expected:?}, got {error:?}",
+            );
+        }
+    }
+
+    // Test: Append ranges past the initial allocation, clear, and reuse the buffer.
+    // Expected: All appended ranges are returned in order and clearing removes all old data.
+    #[test]
+    fn appended_ranges_survive_growth_and_clear() {
+        let mut buffer = MultiPagedRangeBuf::new();
+        assert!(buffer.first().is_none());
+        assert!(buffer.contiguous_aligned().is_none());
+        for page in 0..64u64 {
+            buffer.push_range(PagedRange::new(0, 4096, &[page]).unwrap());
+        }
+        assert_eq!(buffer.range_count(), 64);
+        assert_eq!(
+            ranges(&buffer),
+            (0..64)
+                .map(|page| (0, 4096, vec![page]))
+                .collect::<Vec<_>>()
+        );
+        buffer.clear();
+        assert_eq!(buffer.range_count(), 0);
+        assert!(buffer.range_buffer().is_empty());
+        assert!(buffer.first().is_none());
+        buffer.push_range(PagedRange::new(0, 4096, &[99]).unwrap());
+        assert_eq!(buffer.contiguous_aligned().unwrap().gpns(), [99]);
+        assert_eq!(ranges(&buffer.clone()), [(0, 4096, vec![99])]);
+    }
+
+    // Test: Extend an existing buffer with a failing callback or malformed range.
+    // Expected: Neither failure changes visible ranges; a later valid extension succeeds.
+    #[test]
+    fn failed_extensions_preserve_existing_ranges() {
+        let mut buffer: MultiPagedRangeBuf = [PagedRange::new(0, 4096, &[7]).unwrap()]
+            .into_iter()
+            .collect();
+        let expected = ranges(&buffer);
+        assert_eq!(
+            buffer
+                .try_extend_with(100, 1, |space| {
+                    space[..2].copy_from_slice(&[8, 9]);
+                    Err("copy failed")
+                })
+                .unwrap_err(),
+            "copy failed"
+        );
+        assert_eq!(ranges(&buffer), expected);
+        assert_eq!(buffer.range_buffer(), [4096, 7]);
+        let result = buffer.try_extend_with(2, 1, |space| {
+            space.copy_from_slice(&[0, 8]);
+            Ok::<_, ()>(())
+        });
+        assert!(matches!(result, Ok(Err(Error::EmptyByteCount))));
+        assert_eq!(ranges(&buffer), expected);
+        buffer
+            .try_extend_with(3, 1, |space| {
+                space.copy_from_slice(&[8, 9, u64::MAX]);
+                Ok::<_, ()>(())
+            })
+            .unwrap()
+            .unwrap();
+        assert_eq!(ranges(&buffer), [(0, 4096, vec![7]), (0, 8, vec![9])]);
+        assert_eq!(buffer.range_buffer(), [4096, 7, 8, 9]);
     }
 }
