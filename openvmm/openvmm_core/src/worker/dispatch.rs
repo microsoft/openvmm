@@ -3845,6 +3845,7 @@ impl LoadedVm {
                     }
                     WorkerRpc::Inspect(deferred) => deferred.respond(|resp| {
                         resp.field("device_removal_pending", device_removal.is_pending())
+                            .field("partition_supports_reset", self.inner.partition.supports_reset())
                             .field("memory", &self.inner.memory_manager)
                             .field("memory_layout", &self.inner.mem_layout)
                             .field("resolver", &self.inner.resolver)
