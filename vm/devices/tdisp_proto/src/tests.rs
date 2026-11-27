@@ -162,10 +162,11 @@ fn advertised_states_reject_uninitialized_and_unknown_values() {
     }
 }
 
-// Test: Convert every protocol result in both directions and attempt extraction
-//       on each failure with an otherwise valid bind payload.
-// Expected: Named error identities are exact and failures override payloads.
-//       Success is not an error; unknown wire results become Unknown.
+// Test: Convert every protocol result in both directions. Request Bind from
+//       each failure with a matching, mismatched, or absent payload.
+// Expected: Named error identities are exact and the original failure is
+//       returned for every payload shape. Success is not an error; unknown
+//       wire results become Unknown.
 #[test]
 fn error_identity_and_failure_precedence_are_preserved() {
     macro_rules! error {
@@ -179,16 +180,22 @@ fn error_identity_and_failure_precedence_are_preserved() {
                 TdispGuestOperationErrorCode::from(TdispGuestOperationError::$name),
                 code
             );
-            let response = GuestToHostResponse {
-                result: code as i32,
-                response: Some(Response::Bind(TdispCommandResponseBind {})),
-                ..Default::default()
-            };
-            assert_eq!(response.error_code(), Some(code));
-            assert!(matches!(
-                response.response::<TdispCommandResponseBind>(),
-                Err(TdispGuestOperationError::$name)
-            ));
+            for payload in [
+                Some(Response::Bind(TdispCommandResponseBind {})),
+                Some(Response::StartTdi(TdispCommandResponseStartTdi {})),
+                None,
+            ] {
+                let response = GuestToHostResponse {
+                    result: code as i32,
+                    response: payload,
+                    ..Default::default()
+                };
+                assert_eq!(response.error_code(), Some(code));
+                assert!(matches!(
+                    response.response::<TdispCommandResponseBind>(),
+                    Err(TdispGuestOperationError::$name)
+                ));
+            }
         }};
     }
     error!(Unknown);
@@ -233,8 +240,14 @@ fn future_wire_fields_do_not_turn_unknown_responses_into_success() {
     // No recognized response payload is present.
     let future = [0x08, 1, 0x10, 2, 0x18, 3, 0x52, 4, 0x81, 0, 0xff, 0x27];
     let response = GuestToHostResponse::decode(future.as_slice()).unwrap();
-    assert_eq!(response.error_code(), Some(TdispGuestOperationErrorCode::Success));
-    assert_eq!(response.tdi_state_before_enum(), Some(TdispTdiState::Locked));
+    assert_eq!(
+        response.error_code(),
+        Some(TdispGuestOperationErrorCode::Success)
+    );
+    assert_eq!(
+        response.tdi_state_before_enum(),
+        Some(TdispTdiState::Locked)
+    );
     assert_eq!(response.tdi_state_after_enum(), Some(TdispTdiState::Run));
     assert_eq!(response.type_name(), None);
     assert!(matches!(
@@ -249,7 +262,9 @@ fn future_wire_fields_do_not_turn_unknown_responses_into_success() {
     extended.extend_from_slice(&[0x7a, 4, 0x81, 0, 0xff, 0x27]);
     for wire in [known.as_slice(), extended.as_slice()] {
         let response = GuestToHostResponse::decode(wire).unwrap();
-        let report = response.response::<TdispCommandResponseGetTdiReport>().unwrap();
+        let report = response
+            .response::<TdispCommandResponseGetTdiReport>()
+            .unwrap();
         assert_eq!(report.report_type, 3);
         assert_eq!(report.report_buffer, [0x81, 0, 0xff, 0x27]);
     }
