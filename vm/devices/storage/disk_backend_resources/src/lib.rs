@@ -40,6 +40,17 @@ impl ResourceId<DiskHandleKind> for BlockDeviceDiskHandle {
     const ID: &'static str = "block";
 }
 
+/// Physical-disk-backed disk handle (Windows), such as `\\.\PhysicalDriveN`.
+///
+/// The handle must be opened for synchronous I/O. Size and sector geometry
+/// are queried from the disk.
+#[derive(MeshPayload)]
+pub struct PhysicalDiskHandle(pub std::fs::File);
+
+impl ResourceId<DiskHandleKind> for PhysicalDiskHandle {
+    const ID: &'static str = "physical_disk";
+}
+
 /// Disk handle for a disk that emulates persistent reservation support.
 #[derive(MeshPayload)]
 pub struct DiskWithReservationsHandle(pub Resource<DiskHandleKind>);

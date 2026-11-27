@@ -43,9 +43,11 @@ use windows_sys::Win32::Security::SECURITY_CAPABILITIES;
 use windows_sys::Win32::Security::SID_AND_ATTRIBUTES;
 use windows_sys::Win32::Security::SecurityImpersonation;
 use windows_sys::Win32::Security::TOKEN_DUPLICATE;
+use windows_sys::Win32::Security::TOKEN_ELEVATION;
 use windows_sys::Win32::Security::TOKEN_IMPERSONATE;
 use windows_sys::Win32::Security::TOKEN_QUERY;
 use windows_sys::Win32::Security::TOKEN_USER;
+use windows_sys::Win32::Security::TokenElevation;
 use windows_sys::Win32::Security::TokenImpersonation;
 use windows_sys::Win32::Security::TokenUser;
 use windows_sys::Win32::Storage::FileSystem::CREATE_NEW;
@@ -439,6 +441,28 @@ pub fn open_process_token(access: u32) -> std::io::Result<OwnedHandle> {
         }
         Ok(OwnedHandle::from_raw_handle(token))
     }
+}
+
+/// Returns whether the current process token is elevated.
+pub fn is_process_elevated() -> std::io::Result<bool> {
+    let token = open_process_token(TOKEN_QUERY)?;
+    let mut elevation = TOKEN_ELEVATION { TokenIsElevated: 0 };
+    let mut returned = 0;
+    // SAFETY: The token handle is valid for TOKEN_QUERY, and the output buffer
+    // is a properly sized and aligned TOKEN_ELEVATION.
+    let ok = unsafe {
+        GetTokenInformation(
+            token.as_raw_handle(),
+            TokenElevation,
+            std::ptr::from_mut(&mut elevation).cast(),
+            size_of::<TOKEN_ELEVATION>() as u32,
+            &mut returned,
+        )
+    };
+    if ok == 0 {
+        return Err(std::io::Error::last_os_error());
+    }
+    Ok(elevation.TokenIsElevated != 0)
 }
 
 /// Creates an impersonation token, owned by this process, from `token`, with
