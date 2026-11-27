@@ -190,14 +190,18 @@ impl PciCapability for MsiCapability {
                 // Handle enable/disable state changes
                 let address = state.address;
                 let data = state.data as u32;
+                let pending = state.pending_bits != 0;
                 if let Some(ref mut interrupt) = state.interrupt {
                     if new_enabled && !old_enabled {
                         // Enable MSI
-                        interrupt.enable(address, data, false);
+                        interrupt.enable(address, data, pending);
                     } else if !new_enabled && old_enabled {
                         // Disable MSI
                         interrupt.disable();
                     }
+                }
+                if new_enabled {
+                    state.pending_bits = 0;
                 }
             }
             MsiCapabilityHeader::MSG_ADDR_LO => {
@@ -274,15 +278,18 @@ impl PciCapability for MsiCapability {
                 interrupt.disable();
             }
         }
+        if let Some(interrupt) = &state.interrupt {
+            interrupt.drain_pending();
+        }
 
         // Reset to default values
         state.enabled = false;
         state.multiple_message_enable = 0;
         state.address = 0;
         state.data = 0;
+        state.pending_bits = 0;
         if self.per_vector_masking {
             state.mask_bits = 0;
-            state.pending_bits = 0;
         }
     }
 
@@ -334,7 +341,15 @@ mod save_restore {
         type SavedState = state::SavedState;
 
         fn save(&mut self) -> Result<Self::SavedState, SaveError> {
-            let state = self.state.lock();
+            let mut state = self.state.lock();
+            if !state.enabled
+                && state
+                    .interrupt
+                    .as_ref()
+                    .is_some_and(|interrupt| interrupt.drain_pending())
+            {
+                state.pending_bits |= 1;
+            }
             Ok(state::SavedState {
                 enabled: state.enabled,
                 multiple_message_enable: state.multiple_message_enable,
@@ -369,6 +384,9 @@ mod save_restore {
                     interrupt.disable();
                 }
             }
+            if let Some(interrupt) = &state.interrupt {
+                interrupt.drain_pending();
+            }
 
             // Restore state
             state.enabled = enabled;
@@ -383,9 +401,11 @@ mod save_restore {
             if state.enabled {
                 let address = state.address;
                 let data = state.data as u32;
+                let pending = state.pending_bits != 0;
                 if let Some(ref mut interrupt) = state.interrupt {
-                    interrupt.enable(address, data, false);
+                    interrupt.enable(address, data, pending);
                 }
+                state.pending_bits = 0;
             }
 
             Ok(())
@@ -401,6 +421,64 @@ mod tests {
     use crate::test_helpers::TestPciInterruptController;
     use crate::test_helpers::read_cap_u32;
     use crate::test_helpers::write_cap_u32;
+    use test_with_tracing::test;
+
+    fn pending_msi() -> (MsiCapability, TestPciInterruptController) {
+        let connection = MsiConnection::new();
+        let mut cap = MsiCapability::new(0, true, false, &connection.target());
+        let controller = TestPciInterruptController::new();
+        connection.connect(controller.signal_msi());
+        write_cap_u32(&mut cap, 4, 0xfee0_0000);
+        write_cap_u32(&mut cap, 12, 0x40);
+        cap.interrupt().unwrap().deliver();
+        assert!(controller.get_next_interrupt().is_none());
+        (cap, controller)
+    }
+
+    #[test]
+    fn test_save_preserves_pending_msi_without_restore() {
+        use vmcore::save_restore::SaveRestore;
+
+        let (mut cap, controller) = pending_msi();
+        assert_eq!(cap.save().unwrap().pending_bits & 1, 1);
+        assert_eq!(cap.save().unwrap().pending_bits & 1, 1);
+        write_cap_u32(&mut cap, 0, 1 << 16);
+        assert_eq!(controller.get_next_interrupt(), Some((0xfee0_0000, 0x40)));
+        assert!(controller.get_next_interrupt().is_none());
+        assert_eq!(cap.save().unwrap().pending_bits, 0);
+    }
+
+    #[test]
+    fn test_reset_clears_captured_and_live_pending_msi() {
+        use vmcore::save_restore::SaveRestore;
+
+        for capture in [false, true] {
+            let (mut cap, controller) = pending_msi();
+            if capture {
+                cap.save().unwrap();
+            }
+            cap.reset();
+            write_cap_u32(&mut cap, 4, 0xfee0_0000);
+            write_cap_u32(&mut cap, 12, 0x40);
+            write_cap_u32(&mut cap, 0, 1 << 16);
+            assert!(controller.get_next_interrupt().is_none());
+        }
+    }
+
+    #[test]
+    fn test_restore_replaces_old_pending_msi() {
+        use vmcore::save_restore::SaveRestore;
+
+        let (mut cap, controller) = pending_msi();
+        let connection = MsiConnection::new();
+        let mut clean = MsiCapability::new(0, true, false, &connection.target());
+        let saved = clean.save().unwrap();
+        cap.restore(saved).unwrap();
+        write_cap_u32(&mut cap, 4, 0xfee0_0000);
+        write_cap_u32(&mut cap, 12, 0x40);
+        write_cap_u32(&mut cap, 0, 1 << 16);
+        assert!(controller.get_next_interrupt().is_none());
+    }
 
     #[test]
     fn msi_check() {

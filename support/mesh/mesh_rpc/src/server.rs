@@ -22,15 +22,18 @@ use crate::service::Status;
 use futures::FutureExt;
 use futures::Stream;
 use futures::StreamExt;
+use futures::future::Either;
+use futures::future::select;
 use futures::stream::FusedStream;
-use futures_concurrency::future::TryJoin;
 use futures_concurrency::stream::Merge;
 use mesh::CancelContext;
 use mesh::MeshPayload;
 use mesh::local_node::Port;
 use pal_async::driver::Driver;
+use pal_async::interest::PollEvents;
 use pal_async::socket::AsSockRef;
 use pal_async::socket::Listener;
+use pal_async::socket::PollReadyExt;
 use pal_async::socket::PolledSocket;
 use std::collections::HashMap;
 use std::io::Read;
@@ -162,13 +165,24 @@ impl Server {
     /// This is useful when the caller owns the accept loop, for example to
     /// dispatch a connection to ttrpc or another protocol based on a sniffed
     /// prefix byte.
+    ///
+    /// A read EOF allows accepted responses to finish. Pending request contexts
+    /// are cancelled by request deadlines, socket hangup, I/O failure or dropping
+    /// the connection task. Dropping an individual client call is not a wire
+    /// cancellation signal in unary ttrpc.
+    ///
+    /// TCP and graceful Windows disconnects may report only read EOF, which
+    /// cannot reliably distinguish a full disconnect from a write half close.
+    /// Full disconnect cancellation before a response is not guaranteed in these
+    /// cases. Clients must send deadlines for bounded requests and services must
+    /// stop work when the request context is cancelled.
     pub async fn serve_connection(
         &self,
         stream: PolledSocket<impl AsSockRef + Read + Write>,
     ) -> anyhow::Result<()> {
         let (mut reader, mut writer) = stream.split();
         let (stream_send, mut stream_recv) = mesh::channel();
-        let ctx = CancelContext::new();
+        let (ctx, _cancel) = CancelContext::new().with_cancel();
         let recv_task = async {
             let stream_send = stream_send; // move into this task
             while let Some(message) = read_message(&mut reader).await? {
@@ -206,7 +220,7 @@ impl Server {
                     Err(err) => send.send(Err(err)),
                 }
             }
-            Ok(())
+            anyhow::Result::<_>::Ok(())
         };
         let send_task = async {
             let mut responses = FuturesUnordered::new();
@@ -251,8 +265,29 @@ impl Server {
             }
             anyhow::Result::<_>::Ok(())
         };
-        (recv_task, send_task).try_join().await?;
-        Ok(())
+        let mut send_task = std::pin::pin!(send_task);
+        {
+            let recv_task = std::pin::pin!(recv_task);
+            match select(recv_task, send_task.as_mut()).await {
+                Either::Left((result, _)) => result?,
+                Either::Right((result, _)) => return result,
+            }
+        }
+        // Read EOF can be a write half close, so keep draining accepted replies.
+        match select(
+            send_task,
+            reader.wait_ready(PollEvents::HUP | PollEvents::ERR),
+        )
+        .await
+        {
+            Either::Left((result, _)) => result,
+            Either::Right((events, _)) if events.has_err() => Err(std::io::Error::new(
+                std::io::ErrorKind::ConnectionAborted,
+                "socket error while draining ttrpc replies",
+            )
+            .into()),
+            Either::Right(_) => Ok(()),
+        }
     }
 }
 
@@ -301,6 +336,8 @@ mod grpc {
     use futures::AsyncWrite;
     use futures::FutureExt;
     use futures::StreamExt;
+    use futures::future::Either;
+    use futures::future::select;
     use futures_concurrency::stream::Merge;
     use h2::RecvStream;
     use h2::server::SendResponse;
@@ -334,6 +371,45 @@ mod grpc {
     impl From<http::StatusCode> for RequestError {
         fn from(status: http::StatusCode) -> Self {
             RequestError::Status(status)
+        }
+    }
+
+    pub(super) struct GrpcIo<T>(pub(super) PolledSocket<T>);
+
+    impl<T: AsSockRef + Read> tokio::io::AsyncRead for GrpcIo<T> {
+        fn poll_read(
+            self: Pin<&mut Self>,
+            cx: &mut std::task::Context<'_>,
+            buf: &mut tokio::io::ReadBuf<'_>,
+        ) -> std::task::Poll<std::io::Result<()>> {
+            let n =
+                ready!(Pin::new(&mut self.get_mut().0).poll_read(cx, buf.initialize_unfilled()))?;
+            buf.advance(n);
+            std::task::Poll::Ready(Ok(()))
+        }
+    }
+
+    impl<T: AsSockRef + Write> tokio::io::AsyncWrite for GrpcIo<T> {
+        fn poll_write(
+            self: Pin<&mut Self>,
+            cx: &mut std::task::Context<'_>,
+            buf: &[u8],
+        ) -> std::task::Poll<Result<usize, std::io::Error>> {
+            Pin::new(&mut self.get_mut().0).poll_write(cx, buf)
+        }
+
+        fn poll_flush(
+            self: Pin<&mut Self>,
+            cx: &mut std::task::Context<'_>,
+        ) -> std::task::Poll<Result<(), std::io::Error>> {
+            Pin::new(&mut self.get_mut().0).poll_flush(cx)
+        }
+
+        fn poll_shutdown(
+            self: Pin<&mut Self>,
+            cx: &mut std::task::Context<'_>,
+        ) -> std::task::Poll<Result<(), std::io::Error>> {
+            Pin::new(&mut self.get_mut().0).poll_close(cx)
         }
     }
 
@@ -379,47 +455,7 @@ mod grpc {
             &self,
             stream: PolledSocket<impl AsSockRef + Read + Write>,
         ) -> anyhow::Result<()> {
-            struct Wrap<T>(T);
-
-            impl<T: AsSockRef + Read> tokio::io::AsyncRead for Wrap<PolledSocket<T>> {
-                fn poll_read(
-                    self: Pin<&mut Self>,
-                    cx: &mut std::task::Context<'_>,
-                    buf: &mut tokio::io::ReadBuf<'_>,
-                ) -> std::task::Poll<std::io::Result<()>> {
-                    let n = ready!(
-                        Pin::new(&mut self.get_mut().0).poll_read(cx, buf.initialize_unfilled())
-                    )?;
-                    buf.advance(n);
-                    std::task::Poll::Ready(Ok(()))
-                }
-            }
-
-            impl<T: AsSockRef + Write> tokio::io::AsyncWrite for Wrap<PolledSocket<T>> {
-                fn poll_write(
-                    self: Pin<&mut Self>,
-                    cx: &mut std::task::Context<'_>,
-                    buf: &[u8],
-                ) -> std::task::Poll<Result<usize, std::io::Error>> {
-                    Pin::new(&mut self.get_mut().0).poll_write(cx, buf)
-                }
-
-                fn poll_flush(
-                    self: Pin<&mut Self>,
-                    cx: &mut std::task::Context<'_>,
-                ) -> std::task::Poll<Result<(), std::io::Error>> {
-                    Pin::new(&mut self.get_mut().0).poll_flush(cx)
-                }
-
-                fn poll_shutdown(
-                    self: Pin<&mut Self>,
-                    cx: &mut std::task::Context<'_>,
-                ) -> std::task::Poll<Result<(), std::io::Error>> {
-                    Pin::new(&mut self.get_mut().0).poll_close(cx)
-                }
-            }
-
-            let mut conn = h2::server::handshake(Wrap(stream))
+            let mut conn = h2::server::handshake(GrpcIo(stream))
                 .await
                 .context("failed http2 handshake")?;
 
@@ -450,6 +486,10 @@ mod grpc {
 
                 let task = async move {
                     match self.handle_request(req, &mut resp).await {
+                        Err(RequestError::H2(error)) if error.is_reset() => {
+                            tracing::debug!(%error, "gRPC stream reset");
+                            Ok(())
+                        }
                         Err(RequestError::Status(status)) => {
                             tracing::debug!(status = status.as_u16(), "request error");
                             resp.send_response(
@@ -511,6 +551,7 @@ mod grpc {
             } else {
                 CancelContext::new()
             };
+            let (ctx, _cancel) = ctx.with_cancel();
 
             let (head, body) = req.into_parts();
             let path = head.uri.path();
@@ -520,7 +561,17 @@ mod grpc {
             // No returning HTTP status code errors after this point.
             let mut resp = resp.send_response(response.body(())?, false)?;
 
-            let result = self.invoke_rpc(service, method, body, ctx).await?;
+            let result = {
+                let invoke = std::pin::pin!(self.invoke_rpc(service, method, body, ctx));
+                let reset = std::pin::pin!(std::future::poll_fn(|cx| resp.poll_reset(cx)));
+                match select(invoke, reset).await {
+                    Either::Left((result, _)) => result?,
+                    Either::Right((result, _)) => {
+                        result?;
+                        return Ok(());
+                    }
+                }
+            };
 
             let mut trailers = HeaderMap::new();
             match result {
@@ -635,9 +686,405 @@ mod tests {
     use pal_async::socket::PolledSocket;
     use test_with_tracing::test;
 
+    #[cfg(feature = "grpc")]
+    async fn grpc_request(
+        client: &mut h2::client::SendRequest<prost::bytes::Bytes>,
+    ) -> (
+        h2::client::ResponseFuture,
+        h2::SendStream<prost::bytes::Bytes>,
+    ) {
+        std::future::poll_fn(|cx| client.poll_ready(cx))
+            .await
+            .unwrap();
+        let request = http::Request::builder()
+            .method(http::Method::POST)
+            .uri(format!("http://localhost/{}/Method1", items::Example::NAME))
+            .header("content-type", "application/grpc+proto")
+            .body(())
+            .unwrap();
+        let (response, mut body) = client.send_request(request, false).unwrap();
+        let data = prost::Message::encode_to_vec(&items::Method1Request {
+            foo: "abc".into(),
+            bar: "def".into(),
+        });
+        let mut frame = vec![0];
+        frame.extend((data.len() as u32).to_be_bytes());
+        frame.extend(data);
+        body.send_data(frame.into(), true).unwrap();
+        (response, body)
+    }
+
+    #[cfg(feature = "grpc")]
+    #[test]
+    fn grpc_cancellation_reaches_pending_rpc_without_deadline() {
+        use pal_async::task::Spawn;
+        use std::time::Duration;
+
+        DefaultPool::run_with(async |driver| {
+            mesh::CancelContext::new()
+                .with_timeout(Duration::from_secs(5))
+                .until_cancelled(async {
+                    for reset_stream in [true, false] {
+                        let (client_socket, server_socket) =
+                            unix_socket::UnixStream::pair().unwrap();
+                        let mut server = Server::new();
+                        let mut requests = server.add_service::<items::Example>();
+                        let server_driver = driver.clone();
+                        let server_task = driver.spawn("grpc-cancel-server", async move {
+                            server
+                                .serve_connection_grpc(
+                                    PolledSocket::new(&server_driver, server_socket).unwrap(),
+                                )
+                                .await
+                        });
+                        let (mut client, connection) = h2::client::handshake(super::grpc::GrpcIo(
+                            PolledSocket::new(&driver, client_socket).unwrap(),
+                        ))
+                        .await
+                        .unwrap();
+                        let mut connection_task =
+                            Some(driver.spawn("grpc-cancel-client", connection));
+                        let (response, mut stream) = grpc_request(&mut client).await;
+                        let response = response.await.unwrap();
+                        let (mut ctx, pending) = requests.next().await.unwrap();
+                        assert!(ctx.deadline().is_none());
+                        if reset_stream {
+                            stream.send_reset(h2::Reason::CANCEL);
+                        } else {
+                            let _ = connection_task.take().unwrap().cancel().await;
+                        }
+                        assert_eq!(ctx.cancelled().await, mesh::CancelReason::Cancelled);
+                        drop(pending);
+                        drop(response);
+
+                        if reset_stream {
+                            let (response, _stream) = grpc_request(&mut client).await;
+                            let (ctx, request) = requests.next().await.unwrap();
+                            assert!(ctx.deadline().is_none());
+                            let items::Example::Method1(input, send) = request else {
+                                panic!("expected Method1");
+                            };
+                            send.send(Ok(items::Method1Response {
+                                foo: input.foo,
+                                bar: input.bar,
+                            }));
+                            let mut body = response.await.unwrap().into_body();
+                            while let Some(data) = body.data().await {
+                                let data = data.unwrap();
+                                body.flow_control().release_capacity(data.len()).unwrap();
+                            }
+                            assert_eq!(body.trailers().await.unwrap().unwrap()["grpc-status"], "0");
+                        }
+                        drop(client);
+                        if let Some(task) = connection_task {
+                            let _ = task.cancel().await;
+                        }
+                        let _ = server_task.cancel().await;
+                    }
+                })
+                .await
+                .expect("gRPC transport cancellation did not reach the pending RPC");
+        });
+    }
+
     #[expect(clippy::allow_attributes)]
     mod items {
         include!(concat!(env!("OUT_DIR"), "/ttrpc.example.v1.rs"));
+    }
+
+    async fn send_native_request(
+        writer: &mut (impl futures::AsyncWrite + Unpin),
+        stream_id: u32,
+        timeout_nano: u64,
+    ) {
+        let request = crate::message::Request {
+            service: items::Example::NAME.into(),
+            method: "Method1".into(),
+            payload: prost::Message::encode_to_vec(&items::Method1Request {
+                foo: stream_id.to_string(),
+                bar: "pending".into(),
+            }),
+            timeout_nano,
+            metadata: Vec::new(),
+        };
+        crate::message::write_message(
+            writer,
+            stream_id,
+            crate::message::MESSAGE_TYPE_REQUEST,
+            &mesh::payload::encode(request),
+        )
+        .await
+        .unwrap();
+    }
+
+    fn assert_disconnect_result(result: anyhow::Result<()>) {
+        if let Err(error) = result {
+            let kind = error
+                .root_cause()
+                .downcast_ref::<std::io::Error>()
+                .map(std::io::Error::kind);
+            assert!(
+                matches!(
+                    kind,
+                    Some(
+                        std::io::ErrorKind::ConnectionReset
+                            | std::io::ErrorKind::ConnectionAborted
+                            | std::io::ErrorKind::BrokenPipe
+                            | std::io::ErrorKind::UnexpectedEof
+                    )
+                ),
+                "unexpected server error after disconnect: {error:#}"
+            );
+        }
+    }
+
+    #[test]
+    fn native_half_close_preserves_replies_until_full_disconnect() {
+        use crate::message::MESSAGE_TYPE_RESPONSE;
+        use crate::message::Response;
+        use crate::message::read_message;
+        use futures::AsyncWriteExt;
+        use pal_async::task::Spawn;
+        use std::time::Duration;
+
+        DefaultPool::run_with(async |driver| {
+            mesh::CancelContext::new()
+                .with_timeout(Duration::from_secs(5))
+                .until_cancelled(async {
+                    let modes: &[bool] = if cfg!(windows) {
+                        &[true]
+                    } else {
+                        &[true, false]
+                    };
+                    for &complete_replies in modes {
+                        let (client_socket, server_socket) =
+                            unix_socket::UnixStream::pair().unwrap();
+                        let mut client = PolledSocket::new(&driver, client_socket).unwrap();
+                        let mut server = Server::new();
+                        let mut requests = server.add_service::<items::Example>();
+                        let stream_ids = if complete_replies {
+                            &[1, 3][..]
+                        } else {
+                            &[1][..]
+                        };
+                        for &stream_id in stream_ids {
+                            send_native_request(&mut client, stream_id, 0).await;
+                        }
+                        // Buffer requests and the write EOF before starting the server.
+                        client.close().await.unwrap();
+                        let server_driver = driver.clone();
+                        let server_task = driver.spawn("native-half-close-server", async move {
+                            server
+                                .serve_connection(
+                                    PolledSocket::new(&server_driver, server_socket).unwrap(),
+                                )
+                                .await
+                        });
+                        let mut pending = Vec::new();
+                        for _ in stream_ids {
+                            let (mut ctx, request) = requests.next().await.unwrap();
+                            assert!(ctx.deadline().is_none());
+                            assert!(
+                                !ctx.is_cancelled(),
+                                "write EOF cancelled an accepted request"
+                            );
+                            pending.push((ctx, request));
+                        }
+
+                        if complete_replies {
+                            for &stream_id in stream_ids.iter().rev() {
+                                let (_, request) = pending.pop().unwrap();
+                                let items::Example::Method1(input, send) = request else {
+                                    panic!("expected Method1");
+                                };
+                                let response = items::Method1Response {
+                                    foo: input.foo,
+                                    bar: input.bar,
+                                };
+                                let expected = prost::Message::encode_to_vec(&response);
+                                send.send(Ok(response));
+                                let reply = read_message(&mut client).await.unwrap().unwrap();
+                                assert_eq!(reply.stream_id, stream_id);
+                                assert_eq!(reply.message_type, MESSAGE_TYPE_RESPONSE);
+                                let Response::Payload(payload) =
+                                    mesh::payload::decode(&reply.payload.unwrap()).unwrap()
+                                else {
+                                    panic!("expected a successful response");
+                                };
+                                assert_eq!(payload, expected);
+                                for (ctx, _) in &mut pending {
+                                    assert!(!ctx.is_cancelled());
+                                }
+                            }
+                            server_task.await.unwrap();
+                        } else {
+                            let (mut ctx, request) = pending.pop().unwrap();
+                            drop(client);
+                            assert_eq!(ctx.cancelled().await, mesh::CancelReason::Cancelled);
+                            assert_disconnect_result(server_task.await);
+                            drop(request);
+                        }
+                    }
+                })
+                .await
+                .expect("half closed native ttrpc connection did not finish");
+        });
+    }
+
+    #[test]
+    fn native_half_close_with_deadline_cancels_pending_request() {
+        use futures::AsyncWriteExt;
+        use pal_async::task::Spawn;
+        use std::time::Duration;
+
+        DefaultPool::run_with(async |driver| {
+            mesh::CancelContext::new()
+                .with_timeout(Duration::from_secs(5))
+                .until_cancelled(async {
+                    let (client_socket, server_socket) = unix_socket::UnixStream::pair().unwrap();
+                    let mut client = PolledSocket::new(&driver, client_socket).unwrap();
+                    send_native_request(&mut client, 1, 50_000_000).await;
+                    client.close().await.unwrap();
+                    let mut server = Server::new();
+                    let mut requests = server.add_service::<items::Example>();
+                    let server_driver = driver.clone();
+                    let server_task = driver.spawn("native-deadline-server", async move {
+                        server.run_single(&server_driver, server_socket).await
+                    });
+                    let (mut ctx, request) = requests.next().await.unwrap();
+                    assert!(ctx.deadline().is_some());
+                    assert_eq!(ctx.cancelled().await, mesh::CancelReason::DeadlineExceeded);
+                    let items::Example::Method1(_, send) = request else {
+                        panic!("expected Method1");
+                    };
+                    send.send(Err(crate::service::Status {
+                        code: Code::DeadlineExceeded as i32,
+                        message: "request deadline reached".into(),
+                        details: Vec::new(),
+                    }));
+                    let reply = crate::message::read_message(&mut client)
+                        .await
+                        .unwrap()
+                        .unwrap();
+                    assert_eq!(reply.stream_id, 1);
+                    let crate::message::Response::Status(status) =
+                        mesh::payload::decode(&reply.payload.unwrap()).unwrap()
+                    else {
+                        panic!("expected a deadline response");
+                    };
+                    assert_eq!(status.code, Code::DeadlineExceeded as i32);
+                    server_task.await.unwrap();
+                })
+                .await
+                .expect("native request deadline failed after a write half close");
+        });
+    }
+
+    #[test]
+    fn native_tcp_half_close_preserves_replies() {
+        use futures::AsyncWriteExt;
+        use pal_async::task::Spawn;
+        use std::time::Duration;
+
+        DefaultPool::run_with(async |driver| {
+            mesh::CancelContext::new()
+                .with_timeout(Duration::from_secs(5))
+                .until_cancelled(async {
+                    let listener = std::net::TcpListener::bind(("127.0.0.1", 0)).unwrap();
+                    let client_socket =
+                        std::net::TcpStream::connect(listener.local_addr().unwrap()).unwrap();
+                    client_socket.set_nodelay(true).unwrap();
+                    let server_socket = listener.accept().unwrap().0;
+                    let mut client = PolledSocket::new(&driver, client_socket).unwrap();
+                    send_native_request(&mut client, 1, 0).await;
+                    client.close().await.unwrap();
+                    let mut server = Server::new();
+                    let mut requests = server.add_service::<items::Example>();
+                    let server_driver = driver.clone();
+                    let server_task = driver.spawn("native-tcp-half-close-server", async move {
+                        server.run_single(&server_driver, server_socket).await
+                    });
+                    let (mut ctx, request) = requests.next().await.unwrap();
+                    assert!(!ctx.is_cancelled());
+                    let items::Example::Method1(input, send) = request else {
+                        panic!("expected Method1");
+                    };
+                    let response = items::Method1Response {
+                        foo: input.foo,
+                        bar: input.bar,
+                    };
+                    let expected = prost::Message::encode_to_vec(&response);
+                    send.send(Ok(response));
+                    let reply = crate::message::read_message(&mut client)
+                        .await
+                        .unwrap()
+                        .unwrap();
+                    assert_eq!(reply.stream_id, 1);
+                    assert_eq!(reply.message_type, crate::message::MESSAGE_TYPE_RESPONSE);
+                    let crate::message::Response::Payload(payload) =
+                        mesh::payload::decode(&reply.payload.unwrap()).unwrap()
+                    else {
+                        panic!("expected a successful response");
+                    };
+                    assert_eq!(payload, expected);
+                    server_task.await.unwrap();
+                })
+                .await
+                .expect("native TCP half close discarded the response");
+        });
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn native_tcp_close_cancels_context_only_when_deadline_expires() {
+        use pal_async::task::Spawn;
+        use std::time::Duration;
+
+        DefaultPool::run_with(async |driver| {
+            mesh::CancelContext::new()
+                .with_timeout(Duration::from_secs(5))
+                .until_cancelled(async {
+                    for timeout_nano in [0, 100_000_000] {
+                        let listener = std::net::TcpListener::bind(("127.0.0.1", 0)).unwrap();
+                        let client_socket =
+                            std::net::TcpStream::connect(listener.local_addr().unwrap()).unwrap();
+                        client_socket.set_nodelay(true).unwrap();
+                        let server_socket = listener.accept().unwrap().0;
+                        let mut client = PolledSocket::new(&driver, client_socket).unwrap();
+                        send_native_request(&mut client, 1, timeout_nano).await;
+                        drop(client);
+                        let mut server = Server::new();
+                        let mut requests = server.add_service::<items::Example>();
+                        let server_driver = driver.clone();
+                        let mut server_task = driver.spawn("native-tcp-close-server", async move {
+                            server.run_single(&server_driver, server_socket).await
+                        });
+                        let (mut ctx, request) = requests.next().await.unwrap();
+                        assert_eq!(ctx.deadline().is_some(), timeout_nano != 0);
+                        assert!(!ctx.is_cancelled(), "a TCP FIN is not a full hangup signal");
+                        assert!(futures::poll!(&mut server_task).is_pending());
+                        let items::Example::Method1(input, send) = request else {
+                            panic!("expected Method1");
+                        };
+                        if timeout_nano == 0 {
+                            send.send(Ok(items::Method1Response {
+                                foo: input.foo,
+                                bar: input.bar,
+                            }));
+                        } else {
+                            assert_eq!(ctx.cancelled().await, mesh::CancelReason::DeadlineExceeded);
+                            send.send(Err(crate::service::Status {
+                                code: Code::DeadlineExceeded as i32,
+                                message: "request deadline reached".into(),
+                                details: Vec::new(),
+                            }));
+                        }
+                        assert_disconnect_result(server_task.await);
+                    }
+                })
+                .await
+                .expect("native TCP request did not respect its deadline");
+        });
     }
 
     #[test]
