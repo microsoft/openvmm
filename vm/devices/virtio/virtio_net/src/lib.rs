@@ -519,7 +519,7 @@ struct ProcessingData {
     #[inspect(skip)]
     tx_done: Box<[TxId]>,
     #[inspect(skip)]
-    rx_ready: Box<[RxId]>,
+    rx_ids: Box<[RxId]>,
 }
 
 impl ProcessingData {
@@ -527,7 +527,7 @@ impl ProcessingData {
         Self {
             tx_segments: Vec::new(),
             tx_done: vec![TxId(0); tx_queue_size as usize].into(),
-            rx_ready: vec![RxId(0); rx_queue_size as usize].into(),
+            rx_ids: vec![RxId(0); rx_queue_size as usize].into(),
         }
     }
 }
@@ -841,10 +841,8 @@ impl Coordinator {
 
         for (worker, mut queue) in self.workers.iter_mut().zip(queues) {
             let state = &mut worker.state_mut().unwrap().active_state;
-            let n = state
-                .pending_rx_packets
-                .fill_ready(&mut state.data.rx_ready);
-            queue.rx_avail(&mut state.pending_rx_packets, &state.data.rx_ready[..n]);
+            let n = state.pending_rx_packets.fill_ready(&mut state.data.rx_ids);
+            queue.rx_avail(&mut state.pending_rx_packets, &state.data.rx_ids[..n]);
             worker.task_mut().state = Some(EndpointQueueState { queue });
         }
 
@@ -1339,7 +1337,7 @@ impl Worker {
         check: &task_control::StopCheck<'_>,
     ) -> Result<bool, WorkerError> {
         // Fill the receive queue with any available buffers.
-        let mut rx_ids = Vec::new();
+        let mut n = 0;
         let cancelled = loop {
             // Rejected buffers complete inline and can be reposted, so queue
             // capacity does not bound this loop.
@@ -1356,7 +1354,11 @@ impl Worker {
             };
             tracing::trace!("rx packet");
             match self.active_state.pending_rx_packets.queue_work(work) {
-                Ok(rx_id) => rx_ids.push(rx_id),
+                Ok(rx_id) => {
+                    // Accepted ids are distinct descriptor indices, so they fit.
+                    self.active_state.data.rx_ids[n] = rx_id;
+                    n += 1;
+                }
                 Err(work) => {
                     // Complete (drop) the buffer in avail order via the in-order
                     // completion discipline. Reason traced by callee.
@@ -1369,9 +1371,12 @@ impl Worker {
                 }
             }
         };
-        let did_work = !rx_ids.is_empty();
+        let did_work = n > 0;
         if did_work {
-            epqueue.rx_avail(&mut self.active_state.pending_rx_packets, rx_ids.as_slice());
+            epqueue.rx_avail(
+                &mut self.active_state.pending_rx_packets,
+                &self.active_state.data.rx_ids[..n],
+            );
         }
         if let Some(cancelled) = cancelled {
             return Err(cancelled.into());
@@ -1385,13 +1390,13 @@ impl Worker {
     ) -> Result<bool, WorkerError> {
         let state = &mut self.active_state;
         let n = epqueue
-            .rx_poll(&mut state.pending_rx_packets, &mut state.data.rx_ready)
+            .rx_poll(&mut state.pending_rx_packets, &mut state.data.rx_ids)
             .map_err(WorkerError::Endpoint)?;
         if n == 0 {
             return Ok(false);
         }
 
-        for ready_id in state.data.rx_ready[..n].iter() {
+        for ready_id in state.data.rx_ids[..n].iter() {
             let (work, bytes, dropped) = state.pending_rx_packets.take_rx_work(*ready_id);
             if dropped {
                 state.stats.rx_dropped.increment();
