@@ -1678,6 +1678,29 @@ async fn test_ttrpc_interface(
 
                 waiter.await.unwrap_err();
 
+                for kind in [vmservice::RestoreKind::Unspecified as i32, 99] {
+                    let err = client
+                        .call()
+                        .start(
+                            vmservice::Vm::RestoreVm,
+                            vmservice::RestoreVmRequest {
+                                source_dir: snapshot_path.to_string_lossy().into_owned(),
+                                config: restore_config.clone(),
+                                expected_snapshot_id: None,
+                                resume: false,
+                                kind,
+                            },
+                        )
+                        .await
+                        .unwrap_err();
+                    assert_eq!(
+                        err.code,
+                        mesh_rpc::service::Code::InvalidArgument as i32,
+                        "RestoreVm with restore kind {kind}: {}",
+                        err.message
+                    );
+                }
+
                 let err = client
                     .call()
                     .start(
@@ -1687,6 +1710,7 @@ async fn test_ttrpc_interface(
                             config: restore_config.clone(),
                             expected_snapshot_id: Some("not-a-guid".to_string()),
                             resume: false,
+                            kind: vmservice::RestoreKind::SameVm as i32,
                         },
                     )
                     .await
@@ -1708,6 +1732,7 @@ async fn test_ttrpc_interface(
                             config: restore_config.clone(),
                             expected_snapshot_id: Some(wrong_snapshot_id),
                             resume: false,
+                            kind: vmservice::RestoreKind::SameVm as i32,
                         },
                     )
                     .await
@@ -1729,6 +1754,7 @@ async fn test_ttrpc_interface(
                             // doesn't matter.
                             expected_snapshot_id: Some(snapshot_id.to_uppercase()),
                             resume: false,
+                            kind: vmservice::RestoreKind::Clone as i32,
                         },
                     )
                     .await
@@ -1811,6 +1837,7 @@ async fn test_ttrpc_interface(
                                 config: restore_config,
                                 expected_snapshot_id: Some(second_snapshot_id.clone()),
                                 resume: true,
+                                kind: vmservice::RestoreKind::SameVm as i32,
                             },
                         )
                         .await

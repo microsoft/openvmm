@@ -78,8 +78,12 @@ cargo run -- \
   --disk memdiff:file:path/to/disk.vhdx,on=scsi0 \
   --memory size=4096M \
   --processors 4 \
-  --restore-snapshot path/to/snapshot-dir
+  --restore-snapshot path/to/snapshot-dir \
+  --restore-kind same-vm
 ```
+
+`--restore-kind` is required: `same-vm` if the restored VM is the VM that was
+saved, or `clone` if it is a new copy (e.g. from a template snapshot).
 
 `--restore-snapshot` automatically opens `memory.bin` from the snapshot
 directory, so `file=...` should not be specified in `--memory` (the two

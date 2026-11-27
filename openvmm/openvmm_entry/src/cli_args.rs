@@ -254,9 +254,14 @@ Examples:
     #[clap(
         long,
         value_name = "DIR",
-        conflicts_with_all = ["deprecated_memory_backing_file", "numa"]
+        conflicts_with_all = ["deprecated_memory_backing_file", "numa"],
+        requires = "restore_kind"
     )]
     pub restore_snapshot: Option<PathBuf>,
+
+    /// Whether the restored VM is the saved VM or a copy of it (required with --restore-snapshot)
+    #[clap(long, value_name = "KIND", requires = "restore_snapshot")]
+    pub restore_kind: Option<RestoreKindCli>,
 
     /// use private anonymous memory for guest RAM
     #[clap(long = "private-memory", hide = true, conflicts_with_all = ["deprecated_memory_backing_file", "restore_snapshot", "numa"])]
@@ -1850,6 +1855,15 @@ impl FromStr for VirtioPmemArgs {
 pub enum SecureBootTemplateCli {
     Windows,
     UefiCa,
+}
+
+/// Kind of snapshot restore selected by `--restore-kind`.
+#[derive(Copy, Clone, Debug, PartialEq, Eq, ValueEnum)]
+pub enum RestoreKindCli {
+    /// The VM that was saved, continuing where it left off.
+    SameVm,
+    /// A new copy of the saved VM.
+    Clone,
 }
 
 /// TPM reference implementation version selected by `--tpm`.
@@ -6246,12 +6260,30 @@ mod tests {
             "--snp-restricted-injection",
             "--restore-snapshot",
             "snapshot",
+            "--restore-kind",
+            "same-vm",
         ])
         .unwrap();
         assert_eq!(
             opt.validate_isolation_options().unwrap_err().to_string(),
             "--snp-restricted-injection requires Linux direct boot"
         );
+    }
+
+    #[test]
+    fn test_restore_kind_required_with_restore_snapshot() {
+        assert!(Options::try_parse_from(["openvmm", "--restore-snapshot", "snapshot"]).is_err());
+        assert!(Options::try_parse_from(["openvmm", "--restore-kind", "clone"]).is_err());
+
+        let opt = Options::try_parse_from([
+            "openvmm",
+            "--restore-snapshot",
+            "snapshot",
+            "--restore-kind",
+            "clone",
+        ])
+        .unwrap();
+        assert_eq!(opt.restore_kind, Some(RestoreKindCli::Clone));
     }
 
     #[test]

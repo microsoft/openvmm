@@ -67,6 +67,10 @@ as not provided, so the ID isn't checked. The restored snapshot's
 ID is returned in `RestoreVMResponse.snapshot_id`. Set `resume` to start the
 restored VM immediately; otherwise it is created paused.
 
+`kind` is required: `RESTORE_KIND_SAME_VM` if the restored VM is the VM that
+was saved, or `RESTORE_KIND_CLONE` if it is a new copy (e.g. from a template
+snapshot, or a rollback).
+
 ## Virtio-console file output
 
 `VmService` can write a virtio-console stream directly to a host file. Set the
