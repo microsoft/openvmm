@@ -322,6 +322,319 @@ mod tap_tests {
         assert_eq!(count, 1, "should have processed 1 segment");
     }
 
+    /// A packet socket on a tap's host side, reading what the kernel made of a tap write.
+    struct HostSide {
+        socket: std::os::fd::OwnedFd,
+    }
+
+    impl HostSide {
+        fn bind(name: &str) -> Self {
+            const ETH_P_ALL: u16 = 0x0003;
+
+            // SAFETY: Creating an AF_PACKET socket; the test namespace grants CAP_NET_RAW.
+            let fd = unsafe {
+                libc::socket(
+                    libc::AF_PACKET,
+                    libc::SOCK_RAW,
+                    i32::from(ETH_P_ALL.to_be()),
+                )
+            };
+            assert!(fd >= 0, "socket: {}", std::io::Error::last_os_error());
+            // SAFETY: fd is a valid, newly created file descriptor.
+            let socket = unsafe { std::os::fd::OwnedFd::from_raw_fd(fd) };
+
+            let timeout = libc::timeval {
+                tv_sec: 5,
+                tv_usec: 0,
+            };
+            // SAFETY: the option is a timeval, passed with its size.
+            let ret = unsafe {
+                libc::setsockopt(
+                    fd,
+                    libc::SOL_SOCKET,
+                    libc::SO_RCVTIMEO,
+                    std::ptr::from_ref(&timeout).cast(),
+                    size_of::<libc::timeval>() as libc::socklen_t,
+                )
+            };
+            assert_eq!(ret, 0, "SO_RCVTIMEO: {}", std::io::Error::last_os_error());
+
+            let name = std::ffi::CString::new(name).unwrap();
+            // SAFETY: name is a valid, nul-terminated interface name.
+            let ifindex = unsafe { libc::if_nametoindex(name.as_ptr()) };
+            assert_ne!(ifindex, 0);
+            // SAFETY: All-zero is a valid `sockaddr_ll`.
+            let mut addr: libc::sockaddr_ll = unsafe { std::mem::zeroed() };
+            addr.sll_family = libc::AF_PACKET as u16;
+            addr.sll_protocol = ETH_P_ALL.to_be();
+            addr.sll_ifindex = ifindex as i32;
+            // SAFETY: addr is a valid `sockaddr_ll`, passed with its size.
+            let ret = unsafe {
+                libc::bind(
+                    fd,
+                    std::ptr::from_ref(&addr).cast(),
+                    size_of::<libc::sockaddr_ll>() as libc::socklen_t,
+                )
+            };
+            assert_eq!(ret, 0, "bind: {}", std::io::Error::last_os_error());
+            Self { socket }
+        }
+
+        /// The next frame from `src`, skipping whatever the kernel itself sends on the device.
+        fn read_from(&self, src: [u8; 6]) -> Vec<u8> {
+            let mut buf = vec![0u8; 70000];
+            loop {
+                // SAFETY: buf is a valid buffer of its length.
+                let len = unsafe {
+                    libc::recv(
+                        self.socket.as_raw_fd(),
+                        buf.as_mut_ptr().cast(),
+                        buf.len(),
+                        0,
+                    )
+                };
+                assert!(len >= 0, "recv: {}", std::io::Error::last_os_error());
+                let frame = &buf[..len as usize];
+                if frame[6..12] == src {
+                    return frame.to_vec();
+                }
+            }
+        }
+    }
+
+    /// The source MAC of every frame sent by the tap transmit trials.
+    const TX_SRC_MAC: [u8; 6] = [0x02, 0, 0, 0, 0, 0x77];
+
+    /// An IPv4 or IPv6 frame with no tag, `payload_len` bytes after an L4 header of `l4_len`.
+    fn ip_frame(ipv6: bool, proto: u8, l4_len: usize, payload_len: usize) -> Vec<u8> {
+        let mut frame = vec![0x02, 0, 0, 0, 0, 0x88];
+        frame.extend_from_slice(&TX_SRC_MAC);
+        let l4_total = u16::try_from(l4_len + payload_len).unwrap();
+        if ipv6 {
+            frame.extend_from_slice(&[0x86, 0xdd, 0x60, 0, 0, 0]);
+            frame.extend_from_slice(&l4_total.to_be_bytes());
+            frame.extend_from_slice(&[proto, 64]);
+            frame.extend_from_slice(&[0xfd, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1]);
+            frame.extend_from_slice(&[0xfd, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 2]);
+        } else {
+            frame.extend_from_slice(&[0x08, 0x00, 0x45, 0]);
+            frame.extend_from_slice(&(20 + l4_total).to_be_bytes());
+            frame.extend_from_slice(&[0, 1, 0x40, 0, 64, proto, 0, 0]);
+            frame.extend_from_slice(&[10, 0, 0, 2, 10, 0, 0, 3]);
+        }
+        // Ports, then a TCP data offset where a TCP header has one.
+        let mut l4 = vec![0u8; l4_len];
+        l4[..4].copy_from_slice(&[0x12, 0x34, 0x56, 0x78]);
+        if proto == TCP {
+            l4[12] = ((l4_len / 4) as u8) << 4;
+        }
+        frame.extend_from_slice(&l4);
+        frame.extend((0..payload_len).map(|i| (i % 251) as u8));
+        frame
+    }
+
+    const TCP: u8 = 6;
+    const UDP: u8 = 17;
+
+    /// Sends one frame through the queue and reads what the kernel took from it.
+    fn tx_and_read(
+        queue: &mut dyn net_backend::Queue,
+        pool: &mut net_backend::tests::Bufs,
+        mem: &guestmem::GuestMemory,
+        host: &HostSide,
+        frame: &[u8],
+        meta: TxMetadata,
+    ) -> Vec<u8> {
+        mem.write_at(0, frame).unwrap();
+        let segments = [TxSegment {
+            ty: TxSegmentType::Head(TxMetadata {
+                segment_count: 1,
+                len: frame.len() as u32,
+                ..meta
+            }),
+            gpa: 0,
+            len: frame.len() as u32,
+        }];
+        queue.tx_avail(pool, &segments).unwrap();
+        host.read_from(TX_SRC_MAC)
+    }
+
+    /// The frame with tags laid into its bytes.
+    fn with_inline_tags(frame: &[u8], tags: &[u16]) -> Vec<u8> {
+        let mut tagged = frame[..12].to_vec();
+        for &tpid in tags {
+            tagged.extend_from_slice(&tpid.to_be_bytes());
+            tagged.extend_from_slice(&0x0064u16.to_be_bytes());
+        }
+        tagged.extend_from_slice(&frame[12..]);
+        tagged
+    }
+
+    /// The frame with its tag bytes gone, for comparing against the untagged form.
+    fn without_inline_tags(frame: &[u8]) -> Vec<u8> {
+        let mut plain = frame[..12].to_vec();
+        let mut rest = &frame[12..];
+        while matches!(rest[..2], [0x81, 0x00] | [0x88, 0xa8]) {
+            rest = &rest[4..];
+        }
+        plain.extend_from_slice(rest);
+        plain
+    }
+
+    fn fold_checksum(mut sum: u32) -> u16 {
+        while sum >> 16 != 0 {
+            sum = (sum & 0xffff) + (sum >> 16);
+        }
+        sum as u16
+    }
+
+    fn sum_words(bytes: &[u8]) -> u32 {
+        bytes
+            .chunks_exact(2)
+            .map(|c| u32::from(u16::from_be_bytes([c[0], c[1]])))
+            .sum()
+    }
+
+    /// The inline tag shapes a fixup has to see through: `l2_len` stays 14 for each.
+    const INLINE_TAGS: [&[u16]; 5] = [
+        &[],
+        &[0x8100],
+        &[0x88a8],
+        &[0x88a8, 0x8100],
+        &[0x8100, 0x8100],
+    ];
+
+    /// Send `frame` with `l2_len` 14 and each inline tag shape, and hand back what the kernel took,
+    /// with its tags gone.
+    fn tx_each_inline_tag_shape(
+        queue: &mut dyn net_backend::Queue,
+        pool: &mut net_backend::tests::Bufs,
+        mem: &guestmem::GuestMemory,
+        host: &HostSide,
+        frame: &[u8],
+        meta: &TxMetadata,
+    ) -> Vec<Vec<u8>> {
+        INLINE_TAGS
+            .iter()
+            .map(|tags| {
+                let tagged = with_inline_tags(frame, tags);
+                let got = tx_and_read(
+                    queue,
+                    pool,
+                    mem,
+                    host,
+                    &tagged,
+                    TxMetadata {
+                        l2_len: 14,
+                        // The transport offset the driver gives counts the inline tags.
+                        l3_len: meta.l3_len + 4 * tags.len() as u16,
+                        ..meta.clone()
+                    },
+                );
+                without_inline_tags(&got)
+            })
+            .collect()
+    }
+
+    /// Fixups find the IP header from the frame. With `meta.l2_len` they write into an inline
+    /// tag and leave the IP header as the guest wrote it.
+    async fn test_tap_tx_fixups_see_through_inline_tags(driver: DefaultDriver) {
+        let mut endpoint = new_endpoint("tap0").unwrap();
+        configure_tap("tap0", "10.0.0.1/24");
+        disable_ipv6("tap0");
+        let host = HostSide::bind("tap0");
+        let (mut pool, mem) = make_pool();
+        let config = vec![QueueConfig {
+            driver: Box::new(driver.clone()),
+            enabled_rx_offloads: Default::default(),
+        }];
+        let mut queues = Vec::new();
+        endpoint
+            .get_queues(config, None, &mut queues)
+            .await
+            .unwrap();
+        let queue = queues[0].as_mut();
+
+        // IPv4 header checksum and total length, zeroed as NDIS leaves them.
+        let mut frame = ip_frame(false, UDP, 8, 64);
+        frame[16..18].fill(0);
+        let meta = TxMetadata {
+            flags: TxFlags::new()
+                .with_is_ipv4(true)
+                .with_offload_ip_header_checksum(true),
+            l3_len: 20,
+            ..Default::default()
+        };
+        for got in tx_each_inline_tag_shape(queue, &mut pool, &mem, &host, &frame, &meta) {
+            assert_eq!(u16::from_be_bytes([got[16], got[17]]), 20 + 8 + 64);
+            assert_ne!(got[24..26], [0, 0], "the checksum was written");
+            assert_eq!(fold_checksum(sum_words(&got[14..34])), 0xffff, "valid");
+        }
+        // A driver that lays the tag into the frame can leave both IP version flags clear
+        // (Linux's mana sets them from `skb->protocol`, the tag's TPID then). The frame still
+        // says IPv4, so the checksum is still written.
+        let meta = TxMetadata {
+            flags: TxFlags::new().with_offload_ip_header_checksum(true),
+            l3_len: 20,
+            ..Default::default()
+        };
+        for got in tx_each_inline_tag_shape(queue, &mut pool, &mem, &host, &frame, &meta) {
+            assert_eq!(fold_checksum(sum_words(&got[14..34])), 0xffff, "valid");
+        }
+
+        // IPv6 payload length, zeroed as NDIS leaves it on a segmentation send.
+        let mut frame = ip_frame(true, TCP, 20, 8000);
+        frame[18..20].fill(0);
+        let meta = TxMetadata {
+            flags: TxFlags::new()
+                .with_is_ipv6(true)
+                .with_offload_tcp_checksum(true)
+                .with_offload_tcp_segmentation(true),
+            l3_len: 40,
+            l4_len: 20,
+            max_segment_size: 1000,
+            ..Default::default()
+        };
+        for got in tx_each_inline_tag_shape(queue, &mut pool, &mem, &host, &frame, &meta) {
+            assert_eq!(u16::from_be_bytes([got[18], got[19]]), 20 + 8000);
+        }
+
+        // The pseudo-header seed of a segmentation send, from a length-less one.
+        let frame = ip_frame(false, TCP, 20, 8000);
+        let meta = TxMetadata {
+            flags: TxFlags::new()
+                .with_is_ipv4(true)
+                .with_offload_tcp_checksum(true)
+                .with_offload_tcp_segmentation(true),
+            l3_len: 20,
+            l4_len: 20,
+            max_segment_size: 1000,
+            ..Default::default()
+        };
+        let seed = fold_checksum(sum_words(&frame[26..34]) + u32::from(TCP) + 20 + 8000);
+        for got in tx_each_inline_tag_shape(queue, &mut pool, &mem, &host, &frame, &meta) {
+            assert_eq!(u16::from_be_bytes([got[50], got[51]]), seed);
+            // No IPv6 fixup reaches an IPv4 header.
+            assert_eq!(got[14..34], frame[14..34]);
+        }
+
+        // Behind the tags is no IP: the fixups change nothing, whatever the flags claim. Only
+        // the frame's bytes are checked here, so no transport checksum is asked for: the host
+        // side reads frames and never sees a vnet header's request.
+        let mut frame = ip_frame(false, TCP, 20, 8000);
+        frame[12..14].copy_from_slice(&0x88b5u16.to_be_bytes());
+        let meta = TxMetadata {
+            flags: TxFlags::new()
+                .with_is_ipv4(true)
+                .with_offload_ip_header_checksum(true),
+            l3_len: 20,
+            ..Default::default()
+        };
+        for got in tx_each_inline_tag_shape(queue, &mut pool, &mem, &host, &frame, &meta) {
+            assert_eq!(got, frame);
+        }
+    }
+
     /// Validates that a packet sent into the network triggers an ARP request
     /// that can be received on the TAP queue.
     async fn test_tap_rx_receives_packet(driver: DefaultDriver) {
@@ -753,6 +1066,10 @@ mod tap_tests {
             Trial::test("tap_create", test_tap_create),
             async_trial("tap_get_queues", test_tap_get_queues),
             async_trial("tap_tx_sends_frame", test_tap_tx_sends_frame),
+            async_trial(
+                "tap_tx_fixups_see_through_inline_tags",
+                test_tap_tx_fixups_see_through_inline_tags,
+            ),
             async_trial("tap_rx_receives_packet", test_tap_rx_receives_packet),
             async_trial(
                 "tap_rx_reuses_undersized_buffer",
