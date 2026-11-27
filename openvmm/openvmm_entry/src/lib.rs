@@ -836,7 +836,7 @@ async fn vm_config_from_command_line(
                 anyhow::bail!("must specify --no-alias-map to offer NICs to VTL2");
             }
             let mana = vpci_mana_nics[openhcl_vtl as usize].get_or_insert_with(|| {
-                let vpci_instance_id = Guid::new_random();
+                let vpci_instance_id = mana_vpci_instance_id(openhcl_vtl as usize);
                 underhill_nics.push(vtl2_settings_proto::NicDeviceLegacy {
                     instance_id: vpci_instance_id.to_string(),
                     subordinate_instance_id: None,
@@ -945,7 +945,10 @@ async fn vm_config_from_command_line(
             (vtl, None) => {
                 &mut vpci_mana_nics[vtl]
                     .get_or_insert_with(|| {
-                        (Guid::new_random(), GdmaDeviceHandle { vports: Vec::new() })
+                        (
+                            mana_vpci_instance_id(vtl),
+                            GdmaDeviceHandle { vports: Vec::new() },
+                        )
                     })
                     .1
                     .vports
@@ -2515,6 +2518,18 @@ fn parse_endpoint(
     })
 }
 
+/// Returns the VPCI instance ID of the MANA device for `vtl`.
+///
+/// The ID is fixed so that a guest sees the same device on every boot, rather
+/// than a new one it records alongside the old.
+fn mana_vpci_instance_id(vtl: usize) -> Guid {
+    const BASE_INSTANCE_ID: Guid = guid::guid!("00000000-6a35-477c-a2c0-13484df4873c");
+    Guid {
+        data1: vtl as u32,
+        ..BASE_INSTANCE_ID
+    }
+}
+
 #[derive(Debug)]
 struct NicConfig {
     vtl: DeviceVtl,
@@ -4056,6 +4071,63 @@ mod tests {
                 .unwrap();
 
             assert_eq!(error.to_string(), "multiple devices use PCIe port 'custom'");
+            mesh.shutdown().await;
+        });
+    }
+
+    /// The MANA devices keep their VPCI instance IDs from one start to the
+    /// next, and VTL2's ID is the one its settings name.
+    #[test]
+    fn mana_vpci_instance_ids_are_stable() {
+        DefaultPool::run_with(async |driver| {
+            let temp_dir = tempfile::tempdir().unwrap();
+            let igvm_path = temp_dir.path().join("guest.igvm");
+            File::create(&igvm_path).unwrap();
+            let igvm_options = format!("firmware={},personality=openhcl", igvm_path.display());
+            let mesh = VmmMesh::new(&driver, true).unwrap();
+            let opt = Options::try_parse_from([
+                "openvmm",
+                "--igvm",
+                &igvm_options,
+                "--hv",
+                "--vtl2",
+                "--no-alias-map",
+                "--single-process",
+                "--mana",
+                "consomme",
+                "--net",
+                "uh:consomme",
+            ])
+            .unwrap();
+
+            let mut starts = Vec::new();
+            for _ in 0..2 {
+                let (config, resources) = vm_config_from_command_line(driver.clone(), &mesh, &opt)
+                    .await
+                    .unwrap();
+                let id = |vtl| {
+                    let ids: Vec<_> = config
+                        .vpci_devices
+                        .iter()
+                        .filter(|device| device.vtl == vtl && device.resource.id() == "gdma")
+                        .map(|device| device.instance_id)
+                        .collect();
+                    assert_eq!(ids.len(), 1, "{vtl:?}");
+                    ids[0]
+                };
+                let (vtl0, vtl2) = (id(DeviceVtl::Vtl0), id(DeviceVtl::Vtl2));
+                assert_ne!(vtl0, vtl2);
+                let nics = resources
+                    .vtl2_settings
+                    .unwrap()
+                    .dynamic
+                    .unwrap()
+                    .nic_devices;
+                assert_eq!(nics.len(), 1);
+                assert_eq!(nics[0].instance_id, vtl2.to_string());
+                starts.push((vtl0, vtl2));
+            }
+            assert_eq!(starts[0], starts[1]);
             mesh.shutdown().await;
         });
     }
