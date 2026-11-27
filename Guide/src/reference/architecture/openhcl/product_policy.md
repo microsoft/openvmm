@@ -85,10 +85,9 @@ confidential debugging. Otherwise only the measured command line sets it.
 
 `allow_unattested_devices` lets the relay offer devices that can't be attested
 with TDISP, for hosts that don't support it. It defaults to `false`; only the
-SIVM policy sets it. With it set, OpenHCL sends the host no TDISP command and
-checks no TDI report, so nothing attests the device's identity or
-configuration. On VBS, OpenHCL authorizes the device's DMA when the guest first
-enables its MMIO and doesn't revoke it while the device is assigned.
+SIVM policy sets it, as a temporary solution until TDISP support comes online
+for SIVMs. With it set, OpenHCL sends the host no TDISP command and checks no
+TDI report, so nothing attests the device's identity or configuration.
 
 The catalog defines each device once, with any of `vendor_id`, `device_id`,
 `revision_id`, `base_class`, `sub_class`, and `prog_if`. A field that is left
@@ -119,12 +118,5 @@ When the relay runs, it offers the guest only the allowed devices:
 
 ## In-tree images
 
-The policies are inline in `vm/loader/manifests/*.toml`. They share the catalog
-in `vm/loader/manifests/policies/devices.toml`:
-
-| Manifests | Product | Device policy |
-|---|---|---|
-| `openhcl-x64-cvm-{dev,release}.toml` | `azure` | NVMe, MANA, and the Azure Integrated HSM; `default_on` |
-| `openhcl-x64-{dev,release}.toml`, `openhcl-x64-direct-{dev,release}.toml`, `openhcl-aarch64-{dev,release}.toml` | `azure` | The same devices; `default_off` |
-| `openhcl-x64-cvm-sivm-{dev,release}.toml` | `sivm` | A GPU; `must_be_on`; `allow_unattested_devices` |
-| `openhcl-x64-test-sivm.toml` | `sivm` | None |
+The policies are inline in `vm/loader/manifests/*.toml`, and share the catalog
+in `vm/loader/manifests/policies/devices.toml`.
