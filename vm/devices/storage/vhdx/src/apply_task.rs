@@ -12,8 +12,8 @@
 //!
 //! The apply task does **not** flush. Flushing is driven by consumers
 //! who need durability:
-//! - The log task flushes when it needs to advance the log tail
-//!   (on `LogFull` or graceful close).
+//! - The log task flushes WAL entries under permit pressure, and flushes
+//!   applied data before advancing the log tail on `LogFull` or graceful close.
 //! - [`VhdxFile::flush()`](crate::open::VhdxFile::flush) flushes for crash safety.
 //!
 //! Both callers use

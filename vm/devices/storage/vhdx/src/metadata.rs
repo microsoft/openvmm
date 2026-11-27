@@ -239,8 +239,8 @@ impl MetadataTable {
         &self.entries
     }
 
-    /// Stage replacement data in a free extent. The caller must make
-    /// these writes durable before publishing the replacement table entry.
+    /// Stage replacement data in a free extent. The caller must stage
+    /// it before publishing the table entry, then flush both through the WAL.
     pub async fn stage_replacement<F: AsyncFile>(
         &self,
         cache: &PageCache<F>,
@@ -322,7 +322,7 @@ impl MetadataTable {
         Ok((index, entry))
     }
 
-    /// Publish an entry after its replacement data has become durable.
+    /// Publish an entry after its replacement data has been staged.
     pub async fn publish_replacement<F: AsyncFile>(
         &mut self,
         cache: &PageCache<F>,
