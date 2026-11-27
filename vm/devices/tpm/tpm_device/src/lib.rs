@@ -99,8 +99,6 @@ const ATTESTATION_REPORT_DATA_SIZE: usize = 0x40;
 
 // 24 hours (in seconds)
 const AK_CERT_RENEW_PERIOD: std::time::Duration = std::time::Duration::from_hours(24);
-// 2 seconds
-const REPORT_TIMER_PERIOD: std::time::Duration = std::time::Duration::new(2, 0);
 
 // 16kB and 32kB: These are the sizes of the blob that gets provisioned for the
 // vTPM state. vtpmservice provisions a 16kB blob; HCL/OpenHCL provision a 32kB
@@ -1630,40 +1628,23 @@ impl Tpm {
             std::time::Duration::new(0, 0)
         };
 
-        let attestation_report_renew_elapsed =
-            if let Some(renew_time) = self.attestation_report_renew_time {
-                now.duration_since(renew_time)
-                    .expect("system clock went backwards")
-            } else {
-                std::time::Duration::new(0, 0)
-            };
-
         // On start of read of attestation report index, refresh report when
         // attestation report is supported.
         if u32::from(nv_read.nv_index) == TPM_NV_INDEX_ATTESTATION_REPORT
             && self.ak_cert_type.attested()
         {
-            if attestation_report_renew_elapsed > REPORT_TIMER_PERIOD
-                || self.attestation_report_renew_time.is_none()
-            {
-                // Renew the attestation report.
-                if let Err(e) = self.renew_attestation_report() {
-                    tracelimit::error_ratelimited!(
-                        CVM_ALLOWED,
-                        error = &e as &dyn std::error::Error,
-                        "Error renewing the attestation report"
-                    );
-                }
-            } else {
-                tracing::warn!("Hardware attestation report generation was rate limited");
+            // Renew the attestation report.
+            if let Err(e) = self.renew_attestation_report() {
+                tracelimit::error_ratelimited!(
+                    CVM_ALLOWED,
+                    error = &e as &dyn std::error::Error,
+                    "Error renewing the attestation report"
+                );
             }
         } else {
-            // Renew AkCert if exceeds 24 hours since renewal, or not populated,
-            // and past hardware renewal period.
-            let renew_cert_needed = (self.ak_cert_renew_time.is_none()
-                || ak_cert_renew_elapsed > AK_CERT_RENEW_PERIOD)
-                && (attestation_report_renew_elapsed > REPORT_TIMER_PERIOD
-                    || self.attestation_report_renew_time.is_none());
+            // Renew AkCert if exceeds 24 hours since renewal, or not populated.
+            let renew_cert_needed =
+                self.ak_cert_renew_time.is_none() || ak_cert_renew_elapsed > AK_CERT_RENEW_PERIOD;
 
             tracing::debug!(renew_cert_needed, ak_cert_renew_time =? self.ak_cert_renew_time, "tpm: cert renew check");
 
@@ -2711,6 +2692,137 @@ mod tests {
             complete_ak_cert_request(&mut tpm, false, AkCertResponse::Certificate(Vec::new()));
             assert!(tpm.ak_cert_renew_time.unwrap() > old_time);
             assert_eq!(tpm.read_ak_cert().unwrap().unwrap(), current);
+        }
+    }
+
+    #[async_test]
+    async fn test_nv_read_renews_attestation_report_without_rate_limit() {
+        use tpm_protocol::tpm20proto::protocol::NvReadCmd;
+        use tpm_protocol::tpm20proto::protocol::TpmCommand;
+
+        #[derive(Default)]
+        struct ReportHelper(AtomicUsize);
+
+        #[async_trait::async_trait]
+        impl RequestAkCert for ReportHelper {
+            fn create_ak_cert_request(
+                &self,
+                _ak_pub_modulus: &[u8],
+                _ak_pub_exponent: &[u8],
+                _ek_pub_modulus: &[u8],
+                _ek_pub_exponent: &[u8],
+                guest_input: &[u8],
+                is_attestation_report: bool,
+                existing_cert: Option<&[u8]>,
+            ) -> Result<tpm_resources::AkCertRequest, Box<dyn std::error::Error + Send + Sync>>
+            {
+                assert!(is_attestation_report);
+                assert!(existing_cert.is_none());
+                let generation = self.0.fetch_add(1, Ordering::Relaxed) as u64 + 1;
+                let mut data = generation.to_be_bytes().to_vec();
+                data.extend_from_slice(guest_input);
+                Ok(tpm_resources::AkCertRequest {
+                    data,
+                    has_cert: false,
+                })
+            }
+
+            async fn request_ak_cert(
+                &self,
+                _request: Vec<u8>,
+            ) -> Result<AkCertResponse, Box<dyn std::error::Error + Send + Sync>> {
+                panic!("NV report reads must not request an AK certificate");
+            }
+        }
+
+        for version in [TpmVersion::V138, TpmVersion::V185] {
+            let mut tpm = new_test_tpm(version, None, None, TpmAkCertType::None, false)
+                .await
+                .unwrap();
+            let helper = Arc::new(ReportHelper::default());
+            tpm.ak_cert_type = TpmAkCertType::HwAttested(helper.clone());
+            tpm.allow_ak_cert_renewal = true;
+            tpm.handle_ak_cert_renewal = true;
+            tpm.auth_value = Some(0);
+            let key = TpmRsa2kPublic {
+                modulus: [0; 256],
+                exponent: [0; 3],
+            };
+            tpm.keys = Some(TpmKeys {
+                ak_pub: key,
+                ek_pub: key,
+            });
+            const REPORT_SIZE: usize = size_of::<u64>() + ATTESTATION_REPORT_DATA_SIZE;
+            tpm.tpm_engine_helper
+                .nv_define_space(
+                    TPM20_RH_PLATFORM,
+                    0,
+                    TPM_NV_INDEX_ATTESTATION_REPORT,
+                    REPORT_SIZE as u16,
+                )
+                .unwrap();
+            tpm.tpm_engine_helper
+                .nv_define_space(
+                    TPM20_RH_OWNER,
+                    0,
+                    TPM_NV_INDEX_GUEST_ATTESTATION_INPUT,
+                    ATTESTATION_REPORT_DATA_SIZE as u16,
+                )
+                .unwrap();
+
+            tpm.control_area.command_pa = 0x1000;
+            tpm.control_area.response_pa = 0x2000;
+            let command = NvReadCmd::new(
+                SessionTagEnum::Sessions.into(),
+                TPM20_RH_OWNER,
+                TPM_NV_INDEX_ATTESTATION_REPORT,
+                CmdAuth::new(TPM20_RS_PW, 0, 0, 0),
+                REPORT_SIZE as u16,
+                0,
+            );
+            for generation in 1u64..=2 {
+                let input = [generation as u8; ATTESTATION_REPORT_DATA_SIZE];
+                tpm.tpm_engine_helper
+                    .nv_write(
+                        TPM20_RH_OWNER,
+                        None,
+                        TPM_NV_INDEX_GUEST_ATTESTATION_INPUT,
+                        &input,
+                    )
+                    .unwrap();
+                tpm.rt
+                    .mem
+                    .write_at(tpm.control_area.command_pa, command.as_bytes())
+                    .unwrap();
+                if generation > 1 {
+                    tpm.attestation_report_renew_time = Some(std::time::SystemTime::now());
+                }
+                let result = tpm.mmio_write(
+                    TPM_DEVICE_MMIO_REGION_BASE_ADDRESS + ControlArea::OFFSET_OF_START as u64,
+                    &1u32.to_le_bytes(),
+                );
+                if let IoResult::Defer(mut token) = result {
+                    complete(&mut tpm, &mut token).await;
+                } else {
+                    result.unwrap();
+                }
+
+                let mut response = [0; TPM_PAGE_SIZE];
+                tpm.rt
+                    .mem
+                    .read_at(tpm.control_area.response_pa, &mut response)
+                    .unwrap();
+                let (reply, success) =
+                    NvReadCmd::base_validate_reply(&response, SessionTagEnum::Sessions).unwrap();
+                assert!(success, "NV_Read failed: {:?}", reply.header);
+                assert_eq!(usize::from(reply.data.size.get()), REPORT_SIZE);
+                assert_eq!(
+                    &reply.data.buffer[..size_of::<u64>()],
+                    &generation.to_be_bytes()
+                );
+                assert_eq!(&reply.data.buffer[size_of::<u64>()..REPORT_SIZE], &input);
+                assert_eq!(helper.0.load(Ordering::Relaxed), generation as usize);
+            }
         }
     }
 
