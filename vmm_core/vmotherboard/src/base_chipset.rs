@@ -1058,6 +1058,9 @@ pub mod options {
         pub dt_com_ports: [bool; 4],
         /// Whether to describe both ARM64 PL011 UARTs in the device tree.
         pub dt_pl011_uarts: bool,
+        /// COM1 through COM4 ports that are not emulated, so ACPI must not
+        /// describe them. None means no ports are omitted.
+        pub omitted_com_ports: Option<[bool; 4]>,
     }
 
     /// Device specific dependencies
