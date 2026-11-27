@@ -21,7 +21,6 @@ use protocol::VmbusMessage;
 use thiserror::Error;
 use zerocopy::Immutable;
 use zerocopy::IntoBytes;
-use zerocopy::KnownLayout;
 
 /// The standard, non-redirected synthetic interrupt used by VMBus.
 pub const VMBUS_SINT: u8 = 2;
@@ -80,7 +79,7 @@ pub struct OutgoingMessage {
 /// Represents a vmbus message to be sent using the synic.
 impl OutgoingMessage {
     /// Creates a new `OutgoingMessage` for the specified protocol message.
-    pub fn new<T: IntoBytes + Immutable + KnownLayout + VmbusMessage>(message: &T) -> Self {
+    pub fn new<T: IntoBytes + Immutable + VmbusMessage>(message: &T) -> Self {
         let mut data = [0; MAX_MESSAGE_SIZE];
         let header = MessageHeader::new(T::MESSAGE_TYPE);
         let message_bytes = message.as_bytes();
@@ -95,10 +94,7 @@ impl OutgoingMessage {
 
     /// Creates a new `OutgoingMessage` for the specified protocol message, including additional
     /// data at the end of the message.
-    pub fn with_data<T: IntoBytes + Immutable + KnownLayout + VmbusMessage>(
-        message: &T,
-        data: &[u8],
-    ) -> Self {
+    pub fn with_data<T: IntoBytes + Immutable + VmbusMessage>(message: &T, data: &[u8]) -> Self {
         let mut message = OutgoingMessage::new(message);
         let old_len = message.len as usize;
         let len = old_len + data.len();

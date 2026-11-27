@@ -1,0 +1,17 @@
+# Copyright (c) Microsoft Corporation.
+# Licensed under the MIT License.
+
+[package]
+name = "vmbus_client_core"
+edition.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+vmbus_core.workspace = true
+
+guid.workspace = true
+thiserror.workspace = true
+zerocopy.workspace = true
+
+[lints]
+workspace = true
