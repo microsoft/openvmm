@@ -211,20 +211,24 @@ impl InterruptTable {
             .get_mut(index)
             .ok_or(InvalidRetargetParams::InvalidAddress(address))?;
 
-        interrupt.base_vector = params.vector;
-        interrupt.multicast = params.multicast;
         let mut iter = params.target_processors.iter().map(|&vp_index| {
             apic_id_map
                 .get(vp_index as usize)
                 .copied()
                 .ok_or(InvalidRetargetParams::InvalidVirtualProcessor(vp_index))
         });
-        if let Some(target_apic_id) = iter.next() {
-            interrupt.target_apic_id = target_apic_id?;
-        }
+        let target_apic_id = iter.next().transpose()?;
 
         // Check the rest of the VPs.
-        iter.map(|x| x.map(drop)).collect::<Result<Vec<()>, _>>()?;
+        for target in iter {
+            target?;
+        }
+
+        interrupt.base_vector = params.vector;
+        interrupt.multicast = params.multicast;
+        if let Some(target_apic_id) = target_apic_id {
+            interrupt.target_apic_id = target_apic_id;
+        }
 
         Ok(())
     }
@@ -435,19 +439,18 @@ mod tests {
             devices.retarget_interrupt(7, interrupt.address, 0, &params(0x60, &[1, 9])),
             Err(HvError::InvalidParameter)
         );
+
+        devices
+            .retarget_interrupt(7, interrupt.address, 0, &params(0x70, &[]))
+            .unwrap();
+        device.signal_msi(None, interrupt.address, 0);
+        assert_eq!(msi.take(), [(2, 0x70)]);
     }
 
-    // IGNORED: this test fails because of a known bug. retarget_interrupt
-    // stores the new vector and multicast flag before it validates the target
-    // VPs, and the first target before validating the remaining VPs. A failed
-    // retarget can therefore change the vector and destination. Re-enable
-    // this test together with the fix by removing #[ignore].
-    //
     // Test: Retarget with an invalid first VP, then with a valid first VP
     //       followed by an invalid VP, signaling after each failed request.
-    // Expected: Each failure preserves the original APIC and vector.
+    // Expected: Each failure preserves the original APIC, vector, and multicast flag.
     #[async_test]
-    #[ignore = "known bug: failed retarget changes the vector or destination"]
     async fn failed_retarget_leaves_interrupt_unchanged() {
         let devices = devices();
         let msi = Arc::new(RecordMsi::default());
@@ -456,15 +459,22 @@ mod tests {
             .register_interrupt(1, &params(0x41, &[2]))
             .await
             .unwrap();
+        let index = InterruptTable::interrupt_index_from_address(interrupt.address);
 
         for targets in [&[9][..], &[1, 9][..]] {
+            let mut request = params(0x60, targets);
+            request.multicast = true;
             assert_eq!(
-                devices.retarget_interrupt(7, interrupt.address, 0, &params(0x60, targets)),
+                devices.retarget_interrupt(7, interrupt.address, 0, &request),
                 Err(HvError::InvalidParameter),
                 "targets: {targets:?}"
             );
             device.signal_msi(None, interrupt.address, 0);
             assert_eq!(msi.take(), [(4, 0x41)], "targets: {targets:?}");
+            assert!(
+                !device.table.lock().entries[index].multicast,
+                "targets: {targets:?}"
+            );
         }
     }
 
