@@ -41,7 +41,7 @@ use zerocopy::IntoBytes;
 const DEK: [u8; 32] = [0xab; 32];
 
 #[test]
-fn enrollment_requires_a_boot_floor_or_trusted_saved_state() {
+fn enrollment_requires_boot_sealing_state_or_trusted_saved_state() {
     for eligible in [false, true] {
         for boot_floor in [false, true] {
             assert_eq!(
@@ -97,6 +97,39 @@ fn protector_svn(protector: &[u8]) -> u64 {
     u64::from_le_bytes(protector.header.svn[..8].try_into().unwrap())
 }
 
+fn fixture_sealing_state(
+    tee: &dyn TeeCall,
+    config: &AttestationVmConfig,
+) -> runtime_sealing::RuntimeSealingState {
+    let policy = match tee.tee_type() {
+        TeeType::Snp => runtime_sealing::SavedRuntimeSealingTee::Snp {
+            tcb_version: 7,
+            report_version: 3,
+            cpuid: Some(vec![0x19, 0x01]),
+        },
+        TeeType::Tdx => runtime_sealing::SavedRuntimeSealingTee::Tdx,
+        _ => panic!("unsupported test TEE"),
+    };
+    runtime_sealing::RuntimeSealingState::restore(
+        runtime_sealing::SavedRuntimeSealingState {
+            version: 1,
+            tee: Some(policy),
+        },
+        tee,
+        config,
+    )
+    .unwrap()
+}
+
+fn protector_matches(
+    tee: &dyn TeeCall,
+    config: &AttestationVmConfig,
+    protector: &[u8],
+    dek: &[u8; 32],
+) -> Result<bool, runtime_sealing::Error> {
+    fixture_sealing_state(tee, config).verify_protector(tee, config, protector, dek)
+}
+
 #[test]
 fn successful_event_clears_pending_recovery_without_scheduling_more_work() {
     let now = Instant::from_nanos(1_000_000_000);
@@ -104,14 +137,13 @@ fn successful_event_clears_pending_recovery_without_scheduling_more_work() {
         let mut schedule = Schedule::new(now);
         assert!(!schedule.running);
         assert!(!schedule.force_reseal);
-        assert_eq!(schedule.due(), now);
+        assert_eq!(schedule.next_attempt_at, now);
         schedule.failures = 5;
         schedule.force_reseal = true;
         schedule.completed(now, true, jitter);
         assert_eq!(schedule.failures, 0);
         assert!(!schedule.force_reseal);
-        assert_eq!(schedule.not_before, now + MIN_RESEAL_INTERVAL);
-        assert_eq!(schedule.deadline, now);
+        assert_eq!(schedule.next_attempt_at, now + MIN_RESEAL_INTERVAL);
     }
 }
 
@@ -128,39 +160,38 @@ fn retries_back_off_exponentially_and_saturate() {
             .min(MAX_RETRY_INTERVAL);
             assert_eq!(schedule.failures, index as u32 + 1);
             assert!(schedule.force_reseal);
-            assert_eq!(schedule.not_before, completed_at + delay);
-            assert_eq!(schedule.due(), schedule.not_before);
-            completed_at = schedule.due();
+            assert_eq!(schedule.next_attempt_at, completed_at + delay);
+            completed_at = schedule.next_attempt_at;
         }
         schedule.failures = u32::MAX;
         schedule.completed(completed_at, false, jitter);
         assert_eq!(schedule.failures, u32::MAX);
-        assert_eq!(schedule.due(), completed_at + MAX_RETRY_INTERVAL);
+        assert_eq!(schedule.next_attempt_at, completed_at + MAX_RETRY_INTERVAL);
 
         schedule.completed(completed_at, true, jitter);
         assert_eq!(schedule.failures, 0);
         schedule.completed(completed_at, false, 0);
-        assert_eq!(schedule.due(), completed_at + MIN_RESEAL_INTERVAL);
+        assert_eq!(schedule.next_attempt_at, completed_at + MIN_RESEAL_INTERVAL);
     }
 }
 
 #[test]
-fn notifications_do_not_bypass_success_or_retry_not_before() {
+fn notifications_do_not_bypass_or_postpone_the_next_attempt() {
     let now = Instant::from_nanos(1_000_000_000);
     for success in [false, true] {
         let mut schedule = Schedule::new(now);
         schedule.failures = 5;
         schedule.completed(now, success, u8::MAX);
-        let not_before = schedule.not_before;
-        for offset in [0, 1, 50, 999] {
-            schedule.notified(now + Duration::from_millis(offset));
+        let next_attempt_at = schedule.next_attempt_at;
+        for _ in 0..4 {
+            schedule.notified();
             assert!(schedule.force_reseal);
-            assert_eq!(schedule.not_before, not_before);
-            assert_eq!(schedule.due(), not_before);
+            assert_eq!(schedule.next_attempt_at, next_attempt_at);
         }
-        let late = not_before + Duration::from_secs(1);
-        schedule.notified(late);
-        assert_eq!(schedule.due(), late);
+        // Expired deadlines remain expired: a late notification is immediately due.
+        schedule.next_attempt_at = Instant::from_nanos(0);
+        schedule.notified();
+        assert_eq!(schedule.next_attempt_at, Instant::from_nanos(0));
     }
 }
 
@@ -207,20 +238,21 @@ fn completion_does_not_clear_a_notification_received_during_the_attempt() {
         let mut schedule = Schedule::new(now);
         notification.notify();
         assert!(notification.take(&cx));
-        schedule.notified(now);
+        schedule.notified();
 
         notification.notify();
         schedule.completed(now, success, 0);
         assert!(notification.take(&cx));
-        schedule.notified(now);
+        schedule.notified();
         assert!(schedule.force_reseal);
-        assert_eq!(schedule.due(), now + MIN_RESEAL_INTERVAL);
+        assert_eq!(schedule.next_attempt_at, now + MIN_RESEAL_INTERVAL);
         assert!(!notification.take(&cx));
     }
 }
 
 // No Debug/Inspect: the mock hardware identity is secret material.
 struct Hardware {
+    is_tdx: bool,
     identity: AtomicU8,
     tcb_version: AtomicU64,
     fail_report: AtomicBool,
@@ -232,7 +264,12 @@ struct Hardware {
 
 impl Hardware {
     fn new() -> Arc<Self> {
+        Self::with_tee(false)
+    }
+
+    fn with_tee(is_tdx: bool) -> Arc<Self> {
         Arc::new(Self {
+            is_tdx,
             identity: AtomicU8::new(0x42),
             tcb_version: AtomicU64::new(7),
             fail_report: AtomicBool::new(false),
@@ -272,6 +309,16 @@ impl TeeCall for MockTee {
             return Err(tee_call::Error::AllZeroKey);
         }
         let tcb_version = self.0.tcb_version.load(Ordering::SeqCst);
+        if self.0.is_tdx {
+            let svn = u8::try_from(tcb_version).unwrap();
+            return Ok(GetAttestationReportResult {
+                report: Vec::new(),
+                key_derivation_svn: Some(KeyDerivationSvn::Tdx {
+                    tee_tcb_svn: [svn; 16],
+                    cpu_svn: [svn; 16],
+                }),
+            });
+        }
         // A valid v3 Milan/Genoa comparison domain, with the raw reported TCB
         // and the separately returned derivation SVN from the same snapshot.
         let mut report = vec![0; 1184];
@@ -289,7 +336,11 @@ impl TeeCall for MockTee {
     }
 
     fn tee_type(&self) -> TeeType {
-        TeeType::Snp
+        if self.0.is_tdx {
+            TeeType::Tdx
+        } else {
+            TeeType::Snp
+        }
     }
 }
 
@@ -298,8 +349,20 @@ impl TeeCallGetDerivedKey for MockTee {
         &self,
         policy: KeyDerivationPolicy,
     ) -> Result<[u8; HW_DERIVED_KEY_LENGTH], tee_call::Error> {
-        let KeyDerivationSvn::Snp { tcb_version } = policy.svn else {
-            panic!("expected SNP derivation policy");
+        let mut svn_bytes = [0; 32];
+        match policy.svn {
+            KeyDerivationSvn::Snp { tcb_version } => {
+                assert!(!self.0.is_tdx);
+                svn_bytes[..8].copy_from_slice(&tcb_version.to_le_bytes());
+            }
+            KeyDerivationSvn::Tdx {
+                tee_tcb_svn,
+                cpu_svn,
+            } => {
+                assert!(self.0.is_tdx);
+                svn_bytes[..16].copy_from_slice(&tee_tcb_svn);
+                svn_bytes[16..].copy_from_slice(&cpu_svn);
+            }
         };
         assert!(policy.mix_measurement);
         self.0.derivations.fetch_add(1, Ordering::SeqCst);
@@ -308,10 +371,10 @@ impl TeeCallGetDerivedKey for MockTee {
             return Err(tee_call::Error::AllZeroKey);
         }
         // Older requested SVNs remain derivable after an upgrade. Only the
-        // resident floor, not this mock, enforces the report/header comparison.
+        // SNP floor and fresh report/header checks enforce their own policies.
         // Keep identity migration independent of SVN, but bind keys to both.
         let mut key = [self.0.identity.load(Ordering::SeqCst); HW_DERIVED_KEY_LENGTH];
-        for (byte, svn_byte) in key.iter_mut().zip(tcb_version.to_le_bytes()) {
+        for (byte, svn_byte) in key.iter_mut().zip(svn_bytes) {
             *byte ^= svn_byte;
         }
         Ok(key)
@@ -541,7 +604,14 @@ struct Fixture {
 
 impl Fixture {
     async fn new(driver: &DefaultDriver, existing: bool) -> Self {
-        let hardware = Hardware::new();
+        Self::with_hardware(driver, existing, Hardware::new()).await
+    }
+
+    async fn with_hardware(
+        driver: &DefaultDriver,
+        existing: bool,
+        hardware: Arc<Hardware>,
+    ) -> Self {
         let io = Arc::new(IoControl::default());
         let hook_io = io.clone();
         let disk = HookDisk::new(4 * 1024 * 1024, 512)
@@ -563,18 +633,18 @@ impl Fixture {
             .await
             .unwrap();
         if existing {
-            let protector =
-                runtime_sealing::create_protector(&MockTee(hardware.clone()), &config(), &DEK)
-                    .unwrap();
+            let tee = MockTee(hardware.clone());
+            let protector = fixture_sealing_state(&tee, &config())
+                .create_protector(&tee, &config(), &DEK)
+                .unwrap();
             vmgs.write_file(FileId::HW_KEY_PROTECTOR, &protector)
                 .await
                 .unwrap();
             vmgs.flush().await.unwrap();
         }
-        let tcb_floor =
-            runtime_sealing::RuntimeTcbFloor::new(&MockTee(hardware.clone()), &config()).unwrap();
-        // Initialization observes hardware once; idle-worker assertions count
-        // only work after that required observation, not fixture provisioning.
+        let sealing_state = fixture_sealing_state(&MockTee(hardware.clone()), &config());
+        // Worker tests start from initialized fixture state, excluding provisioning
+        // from operation counts. Boot collection is tested by underhill_attestation.
         hardware.reports.store(0, Ordering::SeqCst);
         hardware.derivations.store(0, Ordering::SeqCst);
         *io.state.lock() = IoState::default();
@@ -585,7 +655,7 @@ impl Fixture {
             client,
             Box::new(MockTee(hardware.clone())),
             config(),
-            tcb_floor,
+            sealing_state,
         );
         Self {
             worker,
@@ -604,7 +674,7 @@ impl Fixture {
             Box::new(MockTee(self.hardware.clone())),
             config(),
         );
-        assert!(self.worker.tcb_floor.lock().is_none());
+        assert!(self.worker.sealing_state.lock().is_none());
     }
 
     async fn close(self) {
@@ -661,8 +731,7 @@ async fn start_resume_and_reset_without_event_do_no_hardware_or_io_even_when_due
         // Even stale or missing protectors must not create work without an event.
         fixture.hardware.identity.store(0x73, Ordering::SeqCst);
         let expired = Instant::from_nanos(0);
-        fixture.worker.schedule.deadline = expired;
-        fixture.worker.schedule.not_before = expired;
+        fixture.worker.schedule.next_attempt_at = expired;
         for reset in [false, true] {
             if reset {
                 fixture.worker.reset().await.unwrap();
@@ -674,8 +743,7 @@ async fn start_resume_and_reset_without_event_do_no_hardware_or_io_even_when_due
             assert!(!fixture.worker.schedule.running);
             assert!(!fixture.worker.schedule.force_reseal);
             assert_eq!(fixture.worker.schedule.failures, 0);
-            assert_eq!(fixture.worker.schedule.deadline, expired);
-            assert_eq!(fixture.worker.schedule.not_before, expired);
+            assert_eq!(fixture.worker.schedule.next_attempt_at, expired);
             assert_eq!(fixture.hardware.reports.load(Ordering::SeqCst), 0);
             assert_eq!(fixture.hardware.derivations.load(Ordering::SeqCst), 0);
             assert_eq!(fixture.io.state.lock().reads, 0);
@@ -690,10 +758,9 @@ async fn start_resume_and_reset_without_event_do_no_hardware_or_io_even_when_due
 #[async_test]
 async fn explicit_notification_reseals_even_matching_hardware_with_same_dek(driver: DefaultDriver) {
     let mut fixture = Fixture::new(&driver, true).await;
-    // Only the notification makes the distant deadline due.
+    // An expired deadline is insufficient without the explicit notification.
     fixture.worker.schedule.running = true;
-    fixture.worker.schedule.not_before = Instant::now();
-    fixture.worker.schedule.deadline = Instant::now() + Duration::from_hours(24);
+    fixture.worker.schedule.next_attempt_at = Instant::now();
     fixture.worker.notification.notify();
     fixture.worker.notification.notify();
     fixture.worker = finish_attempt(fixture.worker, fixture.hardware.reached(3, 3)).await;
@@ -710,10 +777,7 @@ async fn explicit_notification_reseals_even_matching_hardware_with_same_dek(driv
         .read_file(FileId::HW_KEY_PROTECTOR)
         .await
         .unwrap();
-    assert!(
-        runtime_sealing::protector_matches(&*fixture.worker.tee, &config(), &protector, &DEK)
-            .unwrap()
-    );
+    assert!(protector_matches(&*fixture.worker.tee, &config(), &protector, &DEK).unwrap());
     fixture.close().await;
 }
 
@@ -731,14 +795,12 @@ async fn event_recovers_migration_and_reset_after_success_stays_idle_without_mor
     assert_eq!(fixture.io.state.lock().flushes, 2);
     assert!(fixture.worker.vmgs.active_encryption_key().await.unwrap() == DEK);
 
-    let deadline = fixture.worker.schedule.deadline;
-    let not_before = fixture.worker.schedule.not_before;
+    let next_attempt_at = fixture.worker.schedule.next_attempt_at;
     fixture.worker.reset().await.unwrap();
     // Assert before polling: a reset regression must fail, not wait for work.
     assert!(!fixture.worker.schedule.force_reseal);
     assert_eq!(fixture.worker.schedule.failures, 0);
-    assert_eq!(fixture.worker.schedule.deadline, deadline);
-    assert_eq!(fixture.worker.schedule.not_before, not_before);
+    assert_eq!(fixture.worker.schedule.next_attempt_at, next_attempt_at);
     assert!(!fixture.worker.notification.pending.load(Ordering::SeqCst));
 
     *fixture.io.state.lock() = IoState::default();
@@ -746,8 +808,7 @@ async fn event_recovers_migration_and_reset_after_success_stays_idle_without_mor
     // polling path and a normal restart: neither should repeat successful work.
     for running in [true, false] {
         fixture.worker.schedule.running = running;
-        fixture.worker.schedule.deadline = Instant::from_nanos(0);
-        fixture.worker.schedule.not_before = Instant::from_nanos(0);
+        fixture.worker.schedule.next_attempt_at = Instant::from_nanos(0);
         fixture.worker = finish_attempt(fixture.worker, std::future::ready(())).await;
         assert!(!fixture.worker.schedule.running);
         assert!(!fixture.worker.schedule.force_reseal);
@@ -767,10 +828,7 @@ async fn event_recovers_migration_and_reset_after_success_stays_idle_without_mor
     reopened.unlock_with_encryption_key(&DEK).await.unwrap();
     assert!(reopened.active_encryption_key().unwrap() == &DEK);
     let protector = reopened.read_file(FileId::HW_KEY_PROTECTOR).await.unwrap();
-    assert!(
-        runtime_sealing::protector_matches(&MockTee(hardware), &config(), &protector, &DEK)
-            .unwrap()
-    );
+    assert!(protector_matches(&MockTee(hardware), &config(), &protector, &DEK).unwrap());
 }
 
 #[async_test]
@@ -782,25 +840,21 @@ async fn reset_preserves_latched_notification_and_backoff(driver: DefaultDriver)
         if retry {
             fixture.worker.schedule.completed(deadline, false, 0);
         } else {
-            fixture.worker.schedule.deadline = deadline;
-            fixture.worker.schedule.not_before = deadline;
+            fixture.worker.schedule.next_attempt_at = deadline;
         }
-        let deadline = fixture.worker.schedule.deadline;
-        let not_before = fixture.worker.schedule.not_before;
+        let next_attempt_at = fixture.worker.schedule.next_attempt_at;
         let failures = fixture.worker.schedule.failures;
         fixture.worker.notification.notify();
         fixture.worker.reset().await.unwrap();
         assert_eq!(fixture.worker.schedule.force_reseal, retry);
         assert_eq!(fixture.worker.schedule.failures, failures);
-        assert_eq!(fixture.worker.schedule.deadline, deadline);
-        assert_eq!(fixture.worker.schedule.not_before, not_before);
+        assert_eq!(fixture.worker.schedule.next_attempt_at, next_attempt_at);
         assert!(fixture.worker.notification.pending.load(Ordering::SeqCst));
 
         fixture.worker = finish_attempt(fixture.worker, std::future::ready(())).await;
         assert!(fixture.worker.schedule.force_reseal);
         assert_eq!(fixture.worker.schedule.failures, failures);
-        assert_eq!(fixture.worker.schedule.not_before, not_before);
-        assert_eq!(fixture.worker.schedule.due(), not_before);
+        assert_eq!(fixture.worker.schedule.next_attempt_at, next_attempt_at);
         assert!(!fixture.worker.notification.pending.load(Ordering::SeqCst));
         assert_eq!(fixture.hardware.reports.load(Ordering::SeqCst), 0);
         assert_eq!(fixture.hardware.derivations.load(Ordering::SeqCst), 0);
@@ -808,8 +862,7 @@ async fn reset_preserves_latched_notification_and_backoff(driver: DefaultDriver)
         assert_eq!(fixture.io.state.lock().writes, 0);
         assert_eq!(fixture.io.state.lock().flushes, 0);
 
-        fixture.worker.schedule.deadline = Instant::from_nanos(0);
-        fixture.worker.schedule.not_before = Instant::from_nanos(0);
+        fixture.worker.schedule.next_attempt_at = Instant::from_nanos(0);
         fixture.worker = finish_attempt(fixture.worker, fixture.hardware.reached(3, 3)).await;
         assert!(!fixture.worker.schedule.force_reseal);
         assert_eq!(fixture.worker.schedule.failures, 0);
@@ -822,12 +875,12 @@ async fn reset_preserves_latched_notification_and_backoff(driver: DefaultDriver)
 }
 
 #[async_test]
-async fn stopped_worker_keeps_notification_and_start_honors_not_before(driver: DefaultDriver) {
+async fn stopped_worker_keeps_notification_and_start_honors_deadline(driver: DefaultDriver) {
     let mut fixture = Fixture::new(&driver, true).await;
     let notification = fixture.worker.notification.clone();
     // Far in the future solely to prove that Start/notify do not bypass the gate.
-    let not_before = Instant::now() + Duration::from_hours(24);
-    fixture.worker.schedule.not_before = not_before;
+    let next_attempt_at = Instant::now() + Duration::from_hours(24);
+    fixture.worker.schedule.next_attempt_at = next_attempt_at;
     let (send, recv) = mesh::mpsc_channel();
     let mut run = pin!(fixture.worker.run(recv));
     assert!(futures::poll!(run.as_mut()).is_pending());
@@ -846,13 +899,13 @@ async fn stopped_worker_keeps_notification_and_start_honors_not_before(driver: D
     fixture.worker = run.await;
     assert!(!fixture.worker.schedule.running);
     assert!(fixture.worker.schedule.force_reseal);
-    assert_eq!(fixture.worker.schedule.not_before, not_before);
+    assert_eq!(fixture.worker.schedule.next_attempt_at, next_attempt_at);
     assert_eq!(fixture.hardware.reports.load(Ordering::SeqCst), 0);
     assert_eq!(fixture.hardware.derivations.load(Ordering::SeqCst), 0);
     assert_eq!(fixture.io.state.lock().reads, 0);
     assert_eq!(fixture.io.state.lock().writes, 0);
     assert_eq!(fixture.io.state.lock().flushes, 0);
-    fixture.worker.schedule.not_before = Instant::now();
+    fixture.worker.schedule.next_attempt_at = Instant::now();
     fixture.worker = finish_attempt(fixture.worker, fixture.hardware.reached(3, 3)).await;
     assert!(!fixture.worker.schedule.force_reseal);
     assert_eq!(fixture.worker.schedule.failures, 0);
@@ -897,7 +950,7 @@ async fn stop_drains_blocked_write_and_final_flush_and_retains_late_event(driver
         assert!(notification.pending.load(Ordering::SeqCst));
         assert!(fixture.worker.vmgs.active_encryption_key().await.unwrap() == DEK);
 
-        fixture.worker.schedule.not_before = Instant::now();
+        fixture.worker.schedule.next_attempt_at = Instant::now();
         fixture.worker = finish_attempt(fixture.worker, fixture.hardware.reached(6, 6)).await;
         assert!(!fixture.worker.schedule.force_reseal);
         assert_eq!(fixture.worker.schedule.failures, 0);
@@ -1006,10 +1059,10 @@ async fn blocked_hardware_keeps_executor_responsive_and_stop_drains_attempt(driv
             .await
             .unwrap();
         // Verify outside the instrumented wrapper: only worker calls are
-        // required to run off-thread. Stateless verification adds a derivation
-        // but no report, and does not affect BlockingTee's call ordinals.
+        // required to run off-thread. Fixture verification adds a report and
+        // derivation without affecting BlockingTee's call ordinals.
         assert!(
-            runtime_sealing::protector_matches(
+            protector_matches(
                 &MockTee(fixture.hardware.clone()),
                 &config(),
                 &protector,
@@ -1021,17 +1074,17 @@ async fn blocked_hardware_keeps_executor_responsive_and_stop_drains_attempt(driv
 
         // The event storm was one latched event, not parallel/queued jobs.
         // Resume immediately without waiting for the production rate limit.
-        fixture.worker.schedule.not_before = Instant::from_nanos(0);
+        fixture.worker.schedule.next_attempt_at = Instant::from_nanos(0);
         fixture.worker =
-            finish_attempt(fixture.worker, fixture.hardware.reached(6, derivations + 3)).await;
+            finish_attempt(fixture.worker, fixture.hardware.reached(7, derivations + 3)).await;
         assert!(!notification.pending.load(Ordering::SeqCst));
         assert!(!fixture.worker.schedule.force_reseal);
         assert_eq!(fixture.worker.schedule.failures, 0);
         assert_eq!(fixture.io.state.lock().flushes, 4);
         fixture.worker.schedule.running = true;
-        fixture.worker.schedule.not_before = Instant::from_nanos(0);
+        fixture.worker.schedule.next_attempt_at = Instant::from_nanos(0);
         fixture.worker = finish_attempt(fixture.worker, std::future::ready(())).await;
-        assert_eq!(fixture.hardware.reports.load(Ordering::SeqCst), 6);
+        assert_eq!(fixture.hardware.reports.load(Ordering::SeqCst), 7);
         assert_eq!(
             fixture.hardware.derivations.load(Ordering::SeqCst),
             derivations + 3
@@ -1069,25 +1122,18 @@ async fn failed_report_keeps_recovery_pending_and_retries_successfully(driver: D
     assert_eq!(fixture.hardware.derivations.load(Ordering::SeqCst), 0);
     assert!(fixture.worker.schedule.force_reseal);
     assert_eq!(fixture.worker.schedule.failures, 1);
-    assert_eq!(
-        fixture.worker.schedule.due(),
-        fixture.worker.schedule.not_before
-    );
     assert_eq!(fixture.io.state.lock().writes, 0);
     assert_eq!(fixture.io.state.lock().flushes, 0);
 
-    let deadline = fixture.worker.schedule.deadline;
-    let not_before = fixture.worker.schedule.not_before;
+    let next_attempt_at = fixture.worker.schedule.next_attempt_at;
     fixture.worker.start().await;
     fixture.worker.stop().await;
     assert!(fixture.worker.schedule.force_reseal);
     assert_eq!(fixture.worker.schedule.failures, 1);
-    assert_eq!(fixture.worker.schedule.deadline, deadline);
-    assert_eq!(fixture.worker.schedule.not_before, not_before);
+    assert_eq!(fixture.worker.schedule.next_attempt_at, next_attempt_at);
 
     fixture.hardware.fail_report.store(false, Ordering::SeqCst);
-    fixture.worker.schedule.deadline = Instant::now();
-    fixture.worker.schedule.not_before = Instant::now();
+    fixture.worker.schedule.next_attempt_at = Instant::now();
     fixture.worker = finish_attempt(fixture.worker, fixture.hardware.reached(4, 3)).await;
     assert_eq!(fixture.hardware.reports.load(Ordering::SeqCst), 4);
     assert_eq!(fixture.hardware.derivations.load(Ordering::SeqCst), 3);
@@ -1099,23 +1145,6 @@ async fn failed_report_keeps_recovery_pending_and_retries_successfully(driver: D
     fixture.close().await;
 }
 
-#[test]
-fn initialization_report_failure_returns_no_floor_or_fallback() {
-    let hardware = Hardware::new();
-    let tee = MockTee(hardware.clone());
-    hardware.fail_report.store(true, Ordering::SeqCst);
-    assert!(runtime_sealing::RuntimeTcbFloor::new(&tee, &config()).is_err());
-    assert_eq!(hardware.reports.load(Ordering::SeqCst), 1);
-    assert_eq!(hardware.derivations.load(Ordering::SeqCst), 0);
-
-    // A floor can only be obtained by a later successful fresh observation,
-    // not by falling back to a default SVN or a cached protector.
-    hardware.fail_report.store(false, Ordering::SeqCst);
-    let _floor = runtime_sealing::RuntimeTcbFloor::new(&tee, &config()).unwrap();
-    assert_eq!(hardware.reports.load(Ordering::SeqCst), 2);
-    assert_eq!(hardware.derivations.load(Ordering::SeqCst), 0);
-}
-
 #[async_test]
 async fn lower_report_is_rejected_before_derivation_or_write_and_remains_pending(
     driver: DefaultDriver,
@@ -1124,8 +1153,7 @@ async fn lower_report_is_rejected_before_derivation_or_write_and_remains_pending
     fixture.hardware.tcb_version.store(6, Ordering::SeqCst);
     fixture.worker.notification.notify();
     for attempt in 1..=2 {
-        fixture.worker.schedule.deadline = Instant::from_nanos(0);
-        fixture.worker.schedule.not_before = Instant::from_nanos(0);
+        fixture.worker.schedule.next_attempt_at = Instant::from_nanos(0);
         fixture.worker = finish_attempt(fixture.worker, fixture.hardware.reached(attempt, 0)).await;
         assert_eq!(fixture.hardware.reports.load(Ordering::SeqCst), attempt);
         assert_eq!(fixture.hardware.derivations.load(Ordering::SeqCst), 0);
@@ -1137,8 +1165,7 @@ async fn lower_report_is_rejected_before_derivation_or_write_and_remains_pending
     }
 
     fixture.hardware.tcb_version.store(7, Ordering::SeqCst);
-    fixture.worker.schedule.deadline = Instant::from_nanos(0);
-    fixture.worker.schedule.not_before = Instant::from_nanos(0);
+    fixture.worker.schedule.next_attempt_at = Instant::from_nanos(0);
     fixture.worker = finish_attempt(fixture.worker, fixture.hardware.reached(5, 3)).await;
     assert_eq!(fixture.hardware.reports.load(Ordering::SeqCst), 5);
     assert_eq!(fixture.hardware.derivations.load(Ordering::SeqCst), 3);
@@ -1165,8 +1192,7 @@ async fn failed_prepare_keeps_the_floor_raised_by_its_report(driver: DefaultDriv
 
     fixture.hardware.fail_derive.store(false, Ordering::SeqCst);
     fixture.hardware.tcb_version.store(8, Ordering::SeqCst);
-    fixture.worker.schedule.deadline = Instant::from_nanos(0);
-    fixture.worker.schedule.not_before = Instant::from_nanos(0);
+    fixture.worker.schedule.next_attempt_at = Instant::from_nanos(0);
     fixture.worker = finish_attempt(fixture.worker, fixture.hardware.reached(2, 1)).await;
     assert_eq!(fixture.hardware.reports.load(Ordering::SeqCst), 2);
     assert_eq!(fixture.hardware.derivations.load(Ordering::SeqCst), 1);
@@ -1176,8 +1202,7 @@ async fn failed_prepare_keeps_the_floor_raised_by_its_report(driver: DefaultDriv
     assert_eq!(fixture.io.state.lock().flushes, 0);
 
     fixture.hardware.tcb_version.store(9, Ordering::SeqCst);
-    fixture.worker.schedule.deadline = Instant::from_nanos(0);
-    fixture.worker.schedule.not_before = Instant::from_nanos(0);
+    fixture.worker.schedule.next_attempt_at = Instant::from_nanos(0);
     fixture.worker = finish_attempt(fixture.worker, fixture.hardware.reached(5, 4)).await;
     assert_eq!(fixture.hardware.reports.load(Ordering::SeqCst), 5);
     assert_eq!(fixture.hardware.derivations.load(Ordering::SeqCst), 4);
@@ -1210,18 +1235,10 @@ async fn forged_cached_protector_metadata_cannot_lower_the_resident_floor(driver
     // ciphertext/MAC. It must never initialize or replace the resident floor.
     let mut forged = HardwareKeyProtectorV3::read_from_bytes(&protector).unwrap();
     forged.header.svn[..8].copy_from_slice(&6u64.to_le_bytes());
-    assert!(
-        !runtime_sealing::protector_matches(
-            &*fixture.worker.tee,
-            &config(),
-            forged.as_bytes(),
-            &DEK,
-        )
-        .unwrap()
-    );
-    // Stateless verification derives from the header; it obtains no report.
-    assert_eq!(fixture.hardware.reports.load(Ordering::SeqCst), 3);
-    assert_eq!(fixture.hardware.derivations.load(Ordering::SeqCst), 4);
+    assert!(!protector_matches(&*fixture.worker.tee, &config(), forged.as_bytes(), &DEK,).unwrap());
+    // The fresh report rejects the stale header before key derivation.
+    assert_eq!(fixture.hardware.reports.load(Ordering::SeqCst), 4);
+    assert_eq!(fixture.hardware.derivations.load(Ordering::SeqCst), 3);
     assert!(
         fixture
             .worker
@@ -1244,12 +1261,11 @@ async fn forged_cached_protector_metadata_cannot_lower_the_resident_floor(driver
             .hardware
             .tcb_version
             .store(tcb_version, Ordering::SeqCst);
-        fixture.worker.schedule.deadline = Instant::from_nanos(0);
-        fixture.worker.schedule.not_before = Instant::from_nanos(0);
+        fixture.worker.schedule.next_attempt_at = Instant::from_nanos(0);
         fixture.worker =
-            finish_attempt(fixture.worker, fixture.hardware.reached(4 + index, 4)).await;
-        assert_eq!(fixture.hardware.reports.load(Ordering::SeqCst), 4 + index);
-        assert_eq!(fixture.hardware.derivations.load(Ordering::SeqCst), 4);
+            finish_attempt(fixture.worker, fixture.hardware.reached(5 + index, 3)).await;
+        assert_eq!(fixture.hardware.reports.load(Ordering::SeqCst), 5 + index);
+        assert_eq!(fixture.hardware.derivations.load(Ordering::SeqCst), 3);
         assert_eq!(fixture.io.state.lock().writes, 0);
         assert_eq!(fixture.io.state.lock().flushes, 0);
         assert!(fixture.worker.schedule.force_reseal);
@@ -1265,11 +1281,10 @@ async fn forged_cached_protector_metadata_cannot_lower_the_resident_floor(driver
     assert!(cached.as_slice() == forged.as_bytes());
 
     fixture.hardware.tcb_version.store(9, Ordering::SeqCst);
-    fixture.worker.schedule.deadline = Instant::from_nanos(0);
-    fixture.worker.schedule.not_before = Instant::from_nanos(0);
-    fixture.worker = finish_attempt(fixture.worker, fixture.hardware.reached(8, 7)).await;
-    assert_eq!(fixture.hardware.reports.load(Ordering::SeqCst), 8);
-    assert_eq!(fixture.hardware.derivations.load(Ordering::SeqCst), 7);
+    fixture.worker.schedule.next_attempt_at = Instant::from_nanos(0);
+    fixture.worker = finish_attempt(fixture.worker, fixture.hardware.reached(9, 6)).await;
+    assert_eq!(fixture.hardware.reports.load(Ordering::SeqCst), 9);
+    assert_eq!(fixture.hardware.derivations.load(Ordering::SeqCst), 6);
     assert!(!fixture.worker.schedule.force_reseal);
     assert_eq!(fixture.worker.schedule.failures, 0);
     assert!(fixture.io.state.lock().writes > 0);
@@ -1358,8 +1373,7 @@ async fn changed_report_during_pre_or_post_verification_keeps_recovery_pending(
                 .hardware
                 .tcb_version
                 .store(rejected_svn, Ordering::SeqCst);
-            fixture.worker.schedule.deadline = Instant::from_nanos(0);
-            fixture.worker.schedule.not_before = Instant::from_nanos(0);
+            fixture.worker.schedule.next_attempt_at = Instant::from_nanos(0);
             fixture.worker = finish_attempt(
                 fixture.worker,
                 fixture.hardware.reached(reports + 1, derivations),
@@ -1380,8 +1394,7 @@ async fn changed_report_during_pre_or_post_verification_keeps_recovery_pending(
                 .hardware
                 .tcb_version
                 .store(retained_svn, Ordering::SeqCst);
-            fixture.worker.schedule.deadline = Instant::from_nanos(0);
-            fixture.worker.schedule.not_before = Instant::from_nanos(0);
+            fixture.worker.schedule.next_attempt_at = Instant::from_nanos(0);
             fixture.worker = finish_attempt(
                 fixture.worker,
                 fixture.hardware.reached(reports + 4, derivations + 3),
@@ -1433,8 +1446,7 @@ async fn migration_during_event_flush_is_detected_without_another_event(driver: 
     assert_eq!(fixture.io.state.lock().flushes, 2);
     assert!(!fixture.worker.notification.pending.load(Ordering::SeqCst));
 
-    fixture.worker.schedule.deadline = Instant::now();
-    fixture.worker.schedule.not_before = Instant::now();
+    fixture.worker.schedule.next_attempt_at = Instant::now();
     fixture.worker = finish_attempt(fixture.worker, fixture.hardware.reached(6, 6)).await;
     assert!(!fixture.worker.schedule.force_reseal);
     assert_eq!(fixture.worker.schedule.failures, 0);
@@ -1448,17 +1460,14 @@ async fn migration_during_event_flush_is_detected_without_another_event(driver: 
         .read_file(FileId::HW_KEY_PROTECTOR)
         .await
         .unwrap();
-    assert!(
-        runtime_sealing::protector_matches(&*fixture.worker.tee, &config(), &protector, &DEK,)
-            .unwrap()
-    );
+    assert!(protector_matches(&*fixture.worker.tee, &config(), &protector, &DEK,).unwrap());
     fixture.close().await;
 }
 
 #[async_test]
 async fn restore_and_reset_preserve_upgrade_and_failed_flush_obligation(driver: DefaultDriver) {
     let mut fixture = Fixture::new(&driver, false).await;
-    let resident_floor = fixture.worker.tcb_floor.clone();
+    let resident_floor = fixture.worker.sealing_state.clone();
     fixture.hardware.tcb_version.store(9, Ordering::SeqCst);
     fixture.io.state.lock().fail_flush_at = Some(2);
     fixture.worker.notification.notify();
@@ -1484,35 +1493,31 @@ async fn restore_and_reset_preserve_upgrade_and_failed_flush_obligation(driver: 
     let saved: SavedHardwareResealState = state.parse().unwrap();
     fixture.hardware.tcb_version.store(8, Ordering::SeqCst);
     fixture.worker.restore(state).await.unwrap();
-    assert!(Arc::ptr_eq(&resident_floor, &fixture.worker.tcb_floor));
+    assert!(Arc::ptr_eq(&resident_floor, &fixture.worker.sealing_state));
     fixture.prepare_restore(&driver);
-    let resident_floor = fixture.worker.tcb_floor.clone();
+    let resident_floor = fixture.worker.sealing_state.clone();
     fixture
         .worker
         .restore(SavedStateBlob::new(saved))
         .await
         .unwrap();
-    let deadline = fixture.worker.schedule.deadline;
-    let not_before = fixture.worker.schedule.not_before;
+    let next_attempt_at = fixture.worker.schedule.next_attempt_at;
     fixture.worker.reset().await.unwrap();
     assert!(fixture.worker.schedule.force_reseal);
     assert_eq!(fixture.worker.schedule.failures, 1);
-    assert_eq!(fixture.worker.schedule.deadline, deadline);
-    assert_eq!(fixture.worker.schedule.not_before, not_before);
+    assert_eq!(fixture.worker.schedule.next_attempt_at, next_attempt_at);
     assert!(!fixture.worker.notification.pending.load(Ordering::SeqCst));
     fixture.worker.start().await;
     fixture.worker.stop().await;
     assert!(fixture.worker.schedule.force_reseal);
     assert_eq!(fixture.worker.schedule.failures, 1);
-    assert_eq!(fixture.worker.schedule.deadline, deadline);
-    assert_eq!(fixture.worker.schedule.not_before, not_before);
-    assert!(Arc::ptr_eq(&resident_floor, &fixture.worker.tcb_floor));
+    assert_eq!(fixture.worker.schedule.next_attempt_at, next_attempt_at);
+    assert!(Arc::ptr_eq(&resident_floor, &fixture.worker.sealing_state));
     assert_eq!(fixture.hardware.reports.load(Ordering::SeqCst), 2);
     assert_eq!(fixture.hardware.derivations.load(Ordering::SeqCst), 2);
 
     *fixture.io.state.lock() = IoState::default();
-    fixture.worker.schedule.deadline = Instant::from_nanos(0);
-    fixture.worker.schedule.not_before = Instant::from_nanos(0);
+    fixture.worker.schedule.next_attempt_at = Instant::from_nanos(0);
     fixture.worker = finish_attempt(fixture.worker, fixture.hardware.reached(3, 2)).await;
     assert_eq!(fixture.hardware.reports.load(Ordering::SeqCst), 3);
     assert_eq!(fixture.hardware.derivations.load(Ordering::SeqCst), 2);
@@ -1524,8 +1529,7 @@ async fn restore_and_reset_preserve_upgrade_and_failed_flush_obligation(driver: 
     // Returning to the retained floor retries the write, not just the valid
     // cached protector left by the failed flush. No new event is required.
     fixture.hardware.tcb_version.store(9, Ordering::SeqCst);
-    fixture.worker.schedule.deadline = Instant::from_nanos(0);
-    fixture.worker.schedule.not_before = Instant::from_nanos(0);
+    fixture.worker.schedule.next_attempt_at = Instant::from_nanos(0);
     fixture.worker = finish_attempt(fixture.worker, fixture.hardware.reached(6, 5)).await;
     assert_eq!(fixture.hardware.reports.load(Ordering::SeqCst), 6);
     assert_eq!(fixture.hardware.derivations.load(Ordering::SeqCst), 5);
@@ -1571,27 +1575,24 @@ async fn failed_final_flush_retries_write_even_when_cached_protector_matches(
         .read_file(FileId::HW_KEY_PROTECTOR)
         .await
         .unwrap();
-    assert!(
-        runtime_sealing::protector_matches(&*fixture.worker.tee, &config(), &cached, &DEK).unwrap()
-    );
-    // The failed flush skipped post-verification; this stateless check adds
-    // only one derivation, not the missing third report of that attempt.
-    assert_eq!(fixture.hardware.reports.load(Ordering::SeqCst), 2);
+    assert!(protector_matches(&*fixture.worker.tee, &config(), &cached, &DEK).unwrap());
+    // Even successful verification of cached bytes cannot discharge a failed
+    // flush. The worker must still retry the durable write after restore.
+    assert_eq!(fixture.hardware.reports.load(Ordering::SeqCst), 3);
     assert_eq!(fixture.hardware.derivations.load(Ordering::SeqCst), 3);
     let saved = fixture.worker.save().await.unwrap().unwrap();
     fixture.prepare_restore(&driver);
     fixture.worker.restore(saved).await.unwrap();
     assert!(fixture.worker.schedule.force_reseal);
     assert_eq!(fixture.worker.schedule.failures, 1);
-    assert_eq!(fixture.hardware.reports.load(Ordering::SeqCst), 2);
+    assert_eq!(fixture.hardware.reports.load(Ordering::SeqCst), 3);
     assert_eq!(fixture.hardware.derivations.load(Ordering::SeqCst), 3);
     let derivations = fixture.hardware.derivations.load(Ordering::SeqCst);
     *fixture.io.state.lock() = IoState::default();
-    fixture.worker.schedule.deadline = Instant::now();
-    fixture.worker.schedule.not_before = Instant::now();
+    fixture.worker.schedule.next_attempt_at = Instant::now();
     fixture.worker =
-        finish_attempt(fixture.worker, fixture.hardware.reached(5, derivations + 3)).await;
-    assert_eq!(fixture.hardware.reports.load(Ordering::SeqCst), 5);
+        finish_attempt(fixture.worker, fixture.hardware.reached(6, derivations + 3)).await;
+    assert_eq!(fixture.hardware.reports.load(Ordering::SeqCst), 6);
     assert_eq!(
         fixture.hardware.derivations.load(Ordering::SeqCst),
         derivations + 3
@@ -1602,6 +1603,46 @@ async fn failed_final_flush_retries_write_even_when_cached_protector_matches(
     assert_eq!(fixture.io.state.lock().flushes, 2);
     assert!(fixture.worker.vmgs.active_encryption_key().await.unwrap() == DEK);
     fixture.close().await;
+}
+
+#[async_test]
+async fn tdx_marker_restore_reseals_at_current_destination_svn(driver: DefaultDriver) {
+    let mut fixture = Fixture::with_hardware(&driver, true, Hardware::with_tee(true)).await;
+    let saved = fixture.worker.save().await.unwrap().unwrap();
+    let decoded: SavedHardwareResealState = saved.parse().unwrap();
+    assert_eq!(decoded.version, 1);
+    let state = decoded.sealing_state.unwrap();
+    assert_eq!(state.version, 1);
+    assert_eq!(
+        state.tee,
+        Some(runtime_sealing::SavedRuntimeSealingTee::Tdx)
+    );
+
+    fixture.hardware.identity.store(0x73, Ordering::SeqCst);
+    fixture.hardware.tcb_version.store(3, Ordering::SeqCst);
+    fixture.prepare_restore(&driver);
+    fixture.worker.restore(saved).await.unwrap();
+    assert_eq!(fixture.hardware.reports.load(Ordering::SeqCst), 0);
+    assert_eq!(fixture.hardware.derivations.load(Ordering::SeqCst), 0);
+    assert!(fixture.worker.schedule.force_reseal);
+    fixture.worker = finish_attempt(fixture.worker, fixture.hardware.reached(3, 3)).await;
+    assert!(!fixture.worker.schedule.force_reseal);
+    assert_eq!(fixture.worker.schedule.failures, 0);
+    assert_eq!(fixture.io.state.lock().flushes, 2);
+    let disk = fixture.disk.clone();
+    let hardware = fixture.hardware.clone();
+    fixture.close().await;
+    let mut reopened = Vmgs::open(disk, None).await.unwrap();
+    reopened.unlock_with_encryption_key(&DEK).await.unwrap();
+    let protector = reopened.read_file(FileId::HW_KEY_PROTECTOR).await.unwrap();
+    assert_eq!(
+        HardwareKeyProtectorV3::read_from_bytes(&protector)
+            .unwrap()
+            .header
+            .svn,
+        [3; 32]
+    );
+    assert!(protector_matches(&MockTee(hardware), &config(), &protector, &DEK).unwrap());
 }
 
 #[async_test]
@@ -1620,11 +1661,11 @@ async fn state_units_idle_save_restore_forces_one_durable_rewrite(driver: Defaul
         assert!(!saved.force_reseal);
         assert!(!saved.pending_notification);
         assert_eq!(saved.failures, 0);
-        assert!(saved.floor.is_some());
+        assert!(saved.sealing_state.is_some());
         assert_eq!(saved.config_json, serde_json::to_string(&config()).unwrap());
         fixture.worker = unit.remove().await;
         fixture.prepare_restore(&driver);
-        let resident = fixture.worker.tcb_floor.clone();
+        let resident = fixture.worker.sealing_state.clone();
         if changed_hardware {
             // Same SVN, different hardware, and no callback during downtime.
             fixture.hardware.identity.store(0x73, Ordering::SeqCst);
@@ -1635,7 +1676,7 @@ async fn state_units_idle_save_restore_forces_one_durable_rewrite(driver: Defaul
             .unwrap();
         units.restore(states).await.unwrap();
         fixture.worker = unit.remove().await;
-        assert!(Arc::ptr_eq(&resident, &fixture.worker.tcb_floor));
+        assert!(Arc::ptr_eq(&resident, &fixture.worker.sealing_state));
         assert!(fixture.worker.schedule.force_reseal);
         assert!(!fixture.worker.schedule.running);
         assert_eq!(fixture.hardware.reports.load(Ordering::SeqCst), 0);
@@ -1652,7 +1693,7 @@ async fn state_units_idle_save_restore_forces_one_durable_rewrite(driver: Defaul
         let hardware = fixture.hardware.clone();
         // Ordinary reset/start must not reintroduce work after this rewrite.
         fixture.worker.reset().await.unwrap();
-        fixture.worker.schedule.not_before = Instant::from_nanos(0);
+        fixture.worker.schedule.next_attempt_at = Instant::from_nanos(0);
         fixture.worker = finish_attempt(fixture.worker, std::future::ready(())).await;
         assert_eq!(fixture.hardware.reports.load(Ordering::SeqCst), 3);
         assert_eq!(fixture.io.state.lock().flushes, 2);
@@ -1660,10 +1701,7 @@ async fn state_units_idle_save_restore_forces_one_durable_rewrite(driver: Defaul
         let mut reopened = Vmgs::open(disk, None).await.unwrap();
         reopened.unlock_with_encryption_key(&DEK).await.unwrap();
         let protector = reopened.read_file(FileId::HW_KEY_PROTECTOR).await.unwrap();
-        assert!(
-            runtime_sealing::protector_matches(&MockTee(hardware), &config(), &protector, &DEK)
-                .unwrap()
-        );
+        assert!(protector_matches(&MockTee(hardware), &config(), &protector, &DEK).unwrap());
     }
 }
 
@@ -1745,8 +1783,8 @@ async fn restore_ors_saved_and_live_notifications_without_consuming_source(drive
 
 #[derive(Debug, PartialEq, Eq)]
 struct WorkerSnapshot {
-    schedule: (bool, bool, u32, Instant, Instant),
-    floor: Option<runtime_sealing::SavedRuntimeTcbFloor>,
+    schedule: (bool, bool, u32, Instant),
+    sealing_state: Option<runtime_sealing::SavedRuntimeSealingState>,
     pending: bool,
     config_json: String,
 }
@@ -1757,10 +1795,13 @@ fn worker_snapshot(worker: &HardwareReseal) -> WorkerSnapshot {
             worker.schedule.running,
             worker.schedule.force_reseal,
             worker.schedule.failures,
-            worker.schedule.deadline,
-            worker.schedule.not_before,
+            worker.schedule.next_attempt_at,
         ),
-        floor: worker.tcb_floor.lock().as_ref().map(|floor| floor.save()),
+        sealing_state: worker
+            .sealing_state
+            .lock()
+            .as_ref()
+            .map(|floor| floor.save()),
         pending: worker.notification.pending.load(Ordering::SeqCst),
         config_json: serde_json::to_string(&*worker.config).unwrap(),
     }
@@ -1792,7 +1833,7 @@ async fn restore_constructor_cannot_save_or_reseal_before_floor_installation(
     let mut fixture = Fixture::new(&driver, true).await;
     let saved = fixture.worker.save().await.unwrap().unwrap();
     fixture.prepare_restore(&driver);
-    let resident = fixture.worker.tcb_floor.clone();
+    let resident = fixture.worker.sealing_state.clone();
     fixture.worker.notification.notify();
     assert!(fixture.worker.save().await.is_err());
     assert!(fixture.worker.reseal().await.is_err());
@@ -1813,8 +1854,8 @@ async fn restore_constructor_cannot_save_or_reseal_before_floor_installation(
     assert_eq!(fixture.io.state.lock().writes, 0);
     assert_eq!(fixture.io.state.lock().flushes, 0);
     fixture.worker.restore(saved).await.unwrap();
-    assert!(Arc::ptr_eq(&resident, &fixture.worker.tcb_floor));
-    assert!(fixture.worker.tcb_floor.lock().is_some());
+    assert!(Arc::ptr_eq(&resident, &fixture.worker.sealing_state));
+    assert!(fixture.worker.sealing_state.lock().is_some());
     assert!(fixture.worker.notification.pending.load(Ordering::SeqCst));
     fixture.worker = finish_attempt(fixture.worker, fixture.hardware.reached(3, 3)).await;
     assert_eq!(fixture.io.state.lock().flushes, 2);
@@ -1822,66 +1863,74 @@ async fn restore_constructor_cannot_save_or_reseal_before_floor_installation(
 }
 
 #[async_test]
-async fn save_restore_rebases_bounded_relative_timers_and_preserves_backoff(driver: DefaultDriver) {
-    let mut fixture = Fixture::new(&driver, true).await;
-    let now = Instant::now();
-    fixture.worker.schedule.deadline = now + Duration::from_secs(20);
-    fixture.worker.schedule.not_before = now + Duration::from_secs(22);
-    fixture.worker.schedule.force_reseal = true;
-    fixture.worker.schedule.failures = u32::MAX;
-    let blob = fixture.worker.save().await.unwrap().unwrap();
-    let saved: SavedHardwareResealState = blob.parse().unwrap();
-    assert!(saved.deadline_remaining_ns <= 20_000_000_000);
-    assert_eq!(
-        saved.not_before_remaining_ns - saved.deadline_remaining_ns,
-        2_000_000_000
-    );
-    fixture.prepare_restore(&driver);
-    let before = Instant::now();
-    fixture.worker.restore(blob).await.unwrap();
-    let after = Instant::now();
-    let deadline = Duration::from_nanos(saved.deadline_remaining_ns);
-    let not_before = Duration::from_nanos(saved.not_before_remaining_ns);
-    assert!(fixture.worker.schedule.deadline >= before + deadline);
-    assert!(fixture.worker.schedule.deadline <= after + deadline);
-    assert!(fixture.worker.schedule.not_before >= before + not_before);
-    assert!(fixture.worker.schedule.not_before <= after + not_before);
-    assert_eq!(fixture.worker.schedule.failures, u32::MAX);
-    let gate = fixture.worker.schedule.not_before;
-    fixture.worker.notification.notify();
-    fixture.worker = finish_attempt(fixture.worker, std::future::ready(())).await;
-    assert_eq!(fixture.worker.schedule.not_before, gate);
-    assert_eq!(fixture.worker.schedule.due(), gate);
-    assert_eq!(fixture.hardware.reports.load(Ordering::SeqCst), 0);
-    assert_eq!(fixture.io.state.lock().writes, 0);
+async fn save_restore_preserves_retry_and_success_cooldown(driver: DefaultDriver) {
+    for success in [false, true] {
+        let mut fixture = Fixture::new(&driver, true).await;
+        fixture.worker.schedule.failures = u32::MAX;
+        // Future completion gives deterministic room to test the restored gate.
+        fixture
+            .worker
+            .schedule
+            .completed(Instant::now() + Duration::from_secs(20), success, 0);
+        let blob = fixture.worker.save().await.unwrap().unwrap();
+        let saved: SavedHardwareResealState = blob.parse().unwrap();
+        assert_eq!(saved.force_reseal, !success);
+        assert_eq!(saved.failures, if success { 0 } else { u32::MAX });
+        assert!(saved.next_attempt_remaining_ns > 0);
+        assert!(saved.next_attempt_remaining_ns <= MAX_RETRY_INTERVAL.as_nanos() as u64);
 
-    // Saving clamps obsolete or excessively distant process-local deadlines.
-    fixture.worker.schedule.deadline = Instant::from_nanos(0);
-    fixture.worker.schedule.not_before = Instant::now() + Duration::from_hours(24);
-    let bounded: SavedHardwareResealState = fixture
-        .worker
-        .save()
-        .await
-        .unwrap()
-        .unwrap()
-        .parse()
-        .unwrap();
-    assert_eq!(bounded.deadline_remaining_ns, 0);
-    assert_eq!(
-        bounded.not_before_remaining_ns,
-        MAX_RETRY_INTERVAL.as_nanos() as u64
-    );
-    fixture.prepare_restore(&driver);
-    let before = Instant::now();
-    fixture
-        .worker
-        .restore(SavedStateBlob::new(bounded))
-        .await
-        .unwrap();
-    assert!(fixture.worker.schedule.not_before >= before + MAX_RETRY_INTERVAL);
-    assert!(fixture.worker.schedule.not_before <= Instant::now() + MAX_RETRY_INTERVAL);
-    assert_eq!(fixture.worker.schedule.failures, u32::MAX);
-    fixture.close().await;
+        fixture.prepare_restore(&driver);
+        let before = Instant::now();
+        fixture.worker.restore(blob).await.unwrap();
+        let after = Instant::now();
+        let delay = Duration::from_nanos(saved.next_attempt_remaining_ns);
+        let gate = fixture.worker.schedule.next_attempt_at;
+        assert!(gate >= before + delay);
+        assert!(gate <= after + delay);
+        assert!(fixture.worker.schedule.force_reseal);
+        assert_eq!(fixture.worker.schedule.failures, saved.failures);
+        fixture.worker.notification.notify();
+        fixture.worker = finish_attempt(fixture.worker, std::future::ready(())).await;
+        assert_eq!(fixture.worker.schedule.next_attempt_at, gate);
+        assert_eq!(fixture.hardware.reports.load(Ordering::SeqCst), 0);
+        assert_eq!(fixture.io.state.lock().writes, 0);
+
+        for expired in [true, false] {
+            fixture.worker.schedule.next_attempt_at = if expired {
+                Instant::from_nanos(0)
+            } else {
+                Instant::now() + Duration::from_hours(24)
+            };
+            let bounded: SavedHardwareResealState = fixture
+                .worker
+                .save()
+                .await
+                .unwrap()
+                .unwrap()
+                .parse()
+                .unwrap();
+            let expected = if expired {
+                Duration::ZERO
+            } else {
+                MAX_RETRY_INTERVAL
+            };
+            assert_eq!(
+                bounded.next_attempt_remaining_ns,
+                expected.as_nanos() as u64
+            );
+            fixture.prepare_restore(&driver);
+            let before = Instant::now();
+            fixture
+                .worker
+                .restore(SavedStateBlob::new(bounded))
+                .await
+                .unwrap();
+            assert!(fixture.worker.schedule.next_attempt_at >= before + expected);
+            assert!(fixture.worker.schedule.next_attempt_at <= Instant::now() + expected);
+            assert_eq!(fixture.worker.schedule.failures, saved.failures);
+        }
+        fixture.close().await;
+    }
 }
 
 #[async_test]
@@ -1901,23 +1950,20 @@ async fn invalid_restore_is_transactional_for_resident_and_uninitialized_workers
         if !initialized {
             fixture.prepare_restore(&driver);
         }
-        let resident = fixture.worker.tcb_floor.clone();
-        for case in 0..11 {
+        let resident = fixture.worker.sealing_state.clone();
+        for case in 0..14 {
             let mut invalid = saved.clone();
             // A rejected save image must not install even its notification bit.
             invalid.pending_notification = true;
             match case {
                 0 => invalid.version = 0,
                 1 => invalid.version = 2,
-                2 => invalid.floor = None,
-                3 => invalid.floor.as_mut().unwrap().version = 0,
-                4 => invalid.floor.as_mut().unwrap().svn = None,
+                2 => invalid.sealing_state = None,
+                3 => invalid.sealing_state.as_mut().unwrap().version = 0,
+                4 => invalid.sealing_state.as_mut().unwrap().tee = None,
                 5 => {
-                    invalid.floor.as_mut().unwrap().svn =
-                        Some(runtime_sealing::SavedRuntimeTcbFloorSvn::Tdx {
-                            tee_tcb_svn: vec![0; 16],
-                            cpu_svn: vec![0; 16],
-                        });
+                    invalid.sealing_state.as_mut().unwrap().tee =
+                        Some(runtime_sealing::SavedRuntimeSealingTee::Tdx);
                 }
                 6 => {
                     let mut changed = config();
@@ -1926,9 +1972,12 @@ async fn invalid_restore_is_transactional_for_resident_and_uninitialized_workers
                 }
                 // Even equivalent JSON text differs as KDF input.
                 7 => invalid.config_json.push(' '),
-                8 => invalid.deadline_remaining_ns = MAX_RETRY_INTERVAL.as_nanos() as u64 + 1,
-                9 => invalid.not_before_remaining_ns = u64::MAX,
+                8 => invalid.next_attempt_remaining_ns = MAX_RETRY_INTERVAL.as_nanos() as u64 + 1,
+                9 => invalid.next_attempt_remaining_ns = u64::MAX,
                 10 => invalid.failures = 1,
+                11 => invalid.version = 3,
+                12 => invalid.sealing_state.as_mut().unwrap().version = 2,
+                13 => invalid.sealing_state.as_mut().unwrap().version = 3,
                 _ => unreachable!(),
             }
             let before = worker_snapshot(&fixture.worker);
@@ -1941,7 +1990,7 @@ async fn invalid_restore_is_transactional_for_resident_and_uninitialized_workers
                 "case {case}"
             );
             assert_eq!(worker_snapshot(&fixture.worker), before, "case {case}");
-            assert!(Arc::ptr_eq(&resident, &fixture.worker.tcb_floor));
+            assert!(Arc::ptr_eq(&resident, &fixture.worker.sealing_state));
         }
         // Failures also preserve an already-latched destination event.
         fixture.worker.notification.notify();
@@ -1994,11 +2043,11 @@ async fn restoring_older_snapshot_cannot_lower_ratchet_after_failed_prepare(driv
     fixture.hardware.fail_derive.store(true, Ordering::SeqCst);
     fixture.worker.notification.notify();
     fixture.worker = finish_attempt(fixture.worker, fixture.hardware.reached(1, 1)).await;
-    let resident = fixture.worker.tcb_floor.clone();
+    let resident = fixture.worker.sealing_state.clone();
     let before = worker_snapshot(&fixture.worker);
     assert!(fixture.worker.restore(old).await.is_err());
     assert_eq!(worker_snapshot(&fixture.worker), before);
-    assert!(Arc::ptr_eq(&resident, &fixture.worker.tcb_floor));
+    assert!(Arc::ptr_eq(&resident, &fixture.worker.sealing_state));
     assert_eq!(fixture.hardware.reports.load(Ordering::SeqCst), 1);
     assert_eq!(fixture.hardware.derivations.load(Ordering::SeqCst), 1);
     assert_eq!(fixture.io.state.lock().writes, 0);
@@ -2011,8 +2060,7 @@ async fn restoring_older_snapshot_cannot_lower_ratchet_after_failed_prepare(driv
     fixture.hardware.tcb_version.store(8, Ordering::SeqCst);
     fixture.worker.restore(saved).await.unwrap();
     assert_eq!(fixture.hardware.reports.load(Ordering::SeqCst), 1);
-    fixture.worker.schedule.deadline = Instant::from_nanos(0);
-    fixture.worker.schedule.not_before = Instant::from_nanos(0);
+    fixture.worker.schedule.next_attempt_at = Instant::from_nanos(0);
     fixture.worker = finish_attempt(fixture.worker, fixture.hardware.reached(2, 1)).await;
     assert_eq!(fixture.hardware.derivations.load(Ordering::SeqCst), 1);
     assert_eq!(fixture.io.state.lock().writes, 0);
