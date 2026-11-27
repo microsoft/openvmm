@@ -862,19 +862,21 @@ mod tests {
         entered_recv
             .recv_timeout(std::time::Duration::from_secs(5))
             .unwrap();
-        let (started_send, started_recv) = std::sync::mpsc::channel();
+        let initial_seq = test_rcu().data.seq.load(Ordering::SeqCst);
         let (finished_send, finished_recv) = std::sync::mpsc::channel();
         let writer = std::thread::spawn(move || {
-            started_send.send(()).unwrap();
             test_rcu().synchronize_blocking();
             finished_send.send(()).unwrap();
         });
-        started_recv
-            .recv_timeout(std::time::Duration::from_secs(5))
-            .unwrap();
-        PolledTimer::new(&driver)
-            .sleep(std::time::Duration::from_millis(50))
-            .await;
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        let mut timer = PolledTimer::new(&driver);
+        while test_rcu().data.seq.load(Ordering::SeqCst) == initial_seq {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "writer did not enter synchronization"
+            );
+            timer.sleep(std::time::Duration::from_millis(1)).await;
+        }
         assert_eq!(
             finished_recv.try_recv(),
             Err(std::sync::mpsc::TryRecvError::Empty)
