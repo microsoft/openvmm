@@ -8,6 +8,7 @@ use crate::parse_template_json;
 use base64::Engine;
 use firmware_uefi_custom_vars::FinalVars;
 use firmware_uefi_custom_vars::Signature;
+use firmware_uefi_custom_vars::Signatures;
 use firmware_uefi_custom_vars::delta::SignaturesDelta;
 use serde_json::Value;
 use serde_json::json;
@@ -64,6 +65,20 @@ fn assert_digests(signature: &Signature, expected: &[[u8; 32]]) {
     );
 }
 
+fn assert_template_signatures(sigs: &Signatures) {
+    assert_certificates(&sigs.pk, &[&[0, 0xff]]);
+    assert_eq!(sigs.kek.len(), 1);
+    assert_certificates(&sigs.kek[0], &[&[1, 2, 3]]);
+    assert_eq!(sigs.db.len(), 1);
+    assert_digests(&sigs.db[0], &[[0x5a; 32], [0xa5; 32]]);
+    assert_eq!(sigs.dbx.len(), 1);
+    assert_digests(&sigs.dbx[0], &[[0x11; 32]]);
+    assert_eq!(sigs.moklist.len(), 1);
+    assert_certificates(&sigs.moklist[0], &[&[4, 5]]);
+    assert_eq!(sigs.moklistx.len(), 1);
+    assert_digests(&sigs.moklistx[0], &[[0x22; 32]]);
+}
+
 // Test: A fully defined template supplies every signature family and opaque vars.
 // Expected: Final NVRAM data retains ordered certificate/hash bytes, GUID byte
 //       order, Unicode names, custom payloads and little-endian short attributes.
@@ -89,17 +104,7 @@ fn complete_template_and_custom_variable_bytes() {
             .unwrap()
             .into_uefi_vars();
         let sigs = vars.signatures.unwrap();
-        assert_certificates(&sigs.pk, &[&[0, 0xff]]);
-        assert_eq!(sigs.kek.len(), 1);
-        assert_certificates(&sigs.kek[0], &[&[1, 2, 3]]);
-        assert_eq!(sigs.db.len(), 1);
-        assert_digests(&sigs.db[0], &[[0x5a; 32], [0xa5; 32]]);
-        assert_eq!(sigs.dbx.len(), 1);
-        assert_digests(&sigs.dbx[0], &[[0x11; 32]]);
-        assert_eq!(sigs.moklist.len(), 1);
-        assert_certificates(&sigs.moklist[0], &[&[4, 5]]);
-        assert_eq!(sigs.moklistx.len(), 1);
-        assert_digests(&sigs.moklistx[0], &[[0x22; 32]]);
+        assert_template_signatures(&sigs);
         assert_eq!(vars.non_signature_vars.len(), 1);
         let (name, var) = &vars.non_signature_vars[0];
         assert_eq!(name, "Ownerβ");
@@ -174,9 +179,11 @@ fn append_preserves_presence_and_base_signatures() {
 // Test: A delta can select defaults, but templates must be fully defined.
 //       Defaults mixed with real entries or append operations are invalid.
 // Expected: Each signature family rejects ambiguous defaults; delta defaults are
-//       accepted alone, whereas templates return the specific policy error.
+//       resolved with the template's original bytes and entry counts, whereas
+//       templates return the specific policy error.
 #[test]
 fn defaults_and_append_are_rejected_at_the_correct_boundary() {
+    let base = parse_template_json(&serde_json::to_vec(&template()).unwrap()).unwrap();
     let default = json!({"type": "Default"});
     let explicit = json!({"type": "x509", "value": [encoded(&[1])]});
     for field in ["PK", "KEK", "db", "dbx", "MokList", "MokListX"] {
@@ -187,7 +194,11 @@ fn defaults_and_append_are_rejected_at_the_correct_boundary() {
             json!([default])
         };
         let bytes = serde_json::to_vec(&doc).unwrap();
-        assert!(parse_delta_json(&bytes).is_ok());
+        let delta = parse_delta_json(&bytes).unwrap();
+        let vars = FinalVars::resolve(Some(base.clone()), Some(delta))
+            .unwrap()
+            .into_uefi_vars();
+        assert_template_signatures(&vars.signatures.unwrap());
         assert!(matches!(
             parse_template_json(&bytes),
             Err(ParseJsonError::SemanticTemplate(
