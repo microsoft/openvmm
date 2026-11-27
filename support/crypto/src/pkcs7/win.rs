@@ -94,6 +94,7 @@ impl Pkcs7SignedDataInner {
         use windows::Win32::Security::Cryptography::CERT_KEY_CONTEXT_0;
         use windows::Win32::Security::Cryptography::CERT_KEY_CONTEXT_PROP_ID;
         use windows::Win32::Security::Cryptography::CERT_NCRYPT_KEY_SPEC;
+        use windows::Win32::Security::Cryptography::CERT_STORE_NO_CRYPT_RELEASE_FLAG;
         use windows::Win32::Security::Cryptography::CRYPT_ALGORITHM_IDENTIFIER;
         use windows::Win32::Security::Cryptography::CRYPT_SIGN_MESSAGE_PARA;
         use windows::Win32::Security::Cryptography::CertCreateCertificateContext;
@@ -163,12 +164,14 @@ impl Pkcs7SignedDataInner {
             dwKeySpec: CERT_NCRYPT_KEY_SPEC.0,
         };
         // SAFETY: signing_ctx owns a valid CERT_CONTEXT; key_ctx is sized
-        // to match CERT_KEY_CONTEXT.
+        // to match CERT_KEY_CONTEXT. signing_ctx is dropped before nkey.
+        // The flag prevents certificate cleanup from releasing the key;
+        // NCryptKey remains its sole owner and releases it once.
         unsafe {
             CertSetCertificateContextProperty(
                 signing_ctx.0.as_ptr(),
                 CERT_KEY_CONTEXT_PROP_ID,
-                0,
+                CERT_STORE_NO_CRYPT_RELEASE_FLAG.0,
                 Some(std::ptr::from_ref(&key_ctx).cast::<c_void>()),
             )
         }
@@ -423,5 +426,48 @@ impl Drop for OwnedCertContext {
                 self.0.as_ptr(),
             ))
         };
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::pkcs7::Pkcs7SignedData;
+    use crate::rsa::RsaKeyPair;
+    use crate::x509::X509Certificate;
+    use test_with_tracing::test;
+
+    // Test: Repeatedly sign distinct content with independent Windows keys concurrently.
+    // Expected: Signatures verify only their own content, and signing cleanup never crashes.
+    #[test]
+    fn concurrent_signing_survives_helper_cleanup() {
+        let start = std::sync::Barrier::new(8);
+        std::thread::scope(|scope| {
+            for worker in 0..8u8 {
+                let start = &start;
+                scope.spawn(move || {
+                    start.wait();
+                    let key = RsaKeyPair::generate(2048).unwrap();
+                    let cert =
+                        X509Certificate::build_self_signed((&key).into(), &Default::default())
+                            .unwrap();
+                    for sequence in 0..16u8 {
+                        let content = [worker, sequence, 0, 0xff];
+                        let signed = Pkcs7SignedData::sign(&cert, &key, &content).unwrap();
+                        assert!(
+                            signed
+                                .verify_uefi(std::slice::from_ref(&cert), &content)
+                                .unwrap()
+                        );
+                        let mut other_content = content;
+                        other_content[0] ^= 1;
+                        assert!(
+                            !signed
+                                .verify_uefi(std::slice::from_ref(&cert), &other_content)
+                                .unwrap()
+                        );
+                    }
+                });
+            }
+        });
     }
 }

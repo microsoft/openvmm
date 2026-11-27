@@ -126,3 +126,88 @@ mod tests {
         assert_eq!(dec_plain, plain);
     }
 }
+
+#[cfg(test)]
+mod authentication_contract {
+    use super::*;
+    use test_with_tracing::test;
+
+    // Test: Reuse cipher contexts across failed authentication and message boundaries.
+    // Expected: Failure releases no plaintext and does not poison the next operation.
+    #[test]
+    fn reused_context_recovers_after_authentication_failure() {
+        let aes = Aes256Gcm::new(&[0x41; 32]).unwrap();
+        let mut encrypt = aes.encrypt().unwrap();
+        let mut decrypt = aes.decrypt().unwrap();
+        for (index, plain) in [vec![0x19; 17], vec![], vec![0x83; 65]]
+            .into_iter()
+            .enumerate()
+        {
+            let mut iv = [0x73; 12];
+            iv[11] = index as u8;
+            let mut tag = [0; 16];
+            let ciphertext = encrypt.cipher(&iv, &plain, &mut tag).unwrap();
+            let mut bad_tag = tag;
+            bad_tag[0] ^= 1;
+            assert!(decrypt.cipher(&iv, &ciphertext, &bad_tag).is_err());
+            assert_eq!(decrypt.cipher(&iv, &ciphertext, &tag).unwrap(), plain);
+        }
+    }
+
+    // Test: Authenticate empty, partial-block, aligned and multi-block messages.
+    // Expected: Original ciphertext decrypts exactly; modified tags, nonces,
+    //       keys or ciphertext return errors instead of unauthenticated bytes.
+    #[test]
+    fn authenticated_decryption_rejects_modified_inputs() {
+        let aes = Aes256Gcm::new(&[0x41; 32]).unwrap();
+        let wrong_key = Aes256Gcm::new(&[0x42; 32]).unwrap();
+        for (index, length) in [0, 1, 15, 16, 17, 257].into_iter().enumerate() {
+            let mut iv = [0x93; 12];
+            iv[11] = index as u8;
+            let plain: Vec<_> = (0..length).map(|i| (i * 37 + 13) as u8).collect();
+            let mut tag = [0; 16];
+            let ciphertext = aes
+                .encrypt()
+                .unwrap()
+                .cipher(&iv, &plain, &mut tag)
+                .unwrap();
+            assert_eq!(
+                aes.decrypt()
+                    .unwrap()
+                    .cipher(&iv, &ciphertext, &tag)
+                    .unwrap(),
+                plain
+            );
+            assert!(
+                wrong_key
+                    .decrypt()
+                    .unwrap()
+                    .cipher(&iv, &ciphertext, &tag)
+                    .is_err()
+            );
+            let mut altered_iv = iv;
+            altered_iv[0] ^= 0x80;
+            assert!(
+                aes.decrypt()
+                    .unwrap()
+                    .cipher(&altered_iv, &ciphertext, &tag)
+                    .is_err()
+            );
+            for byte in [0, 15] {
+                let mut altered_tag = tag;
+                altered_tag[byte] ^= 1;
+                assert!(
+                    aes.decrypt()
+                        .unwrap()
+                        .cipher(&iv, &ciphertext, &altered_tag)
+                        .is_err()
+                );
+            }
+            if !ciphertext.is_empty() {
+                let mut altered = ciphertext.clone();
+                altered[length / 2] ^= 1;
+                assert!(aes.decrypt().unwrap().cipher(&iv, &altered, &tag).is_err());
+            }
+        }
+    }
+}
