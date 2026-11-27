@@ -18,25 +18,24 @@ pub enum FirmwareFlavor {
 impl FirmwareFlavor {
     fn default_for_arch(arch: CommonArch) -> Self {
         match arch {
-            CommonArch::X86_64 | CommonArch::Aarch64 => Self::LegacyClangPdb,
+            CommonArch::X86_64 | CommonArch::Aarch64 => Self::PatinaClangPdb,
         }
     }
 
     fn file_name(self, arch: CommonArch) -> anyhow::Result<&'static str> {
         Ok(match (self, arch) {
-            (Self::LegacyVs2022, CommonArch::X86_64) => "firmware-RELEASE-X64-VS2022.tar.gz",
-            (Self::LegacyVs2022, CommonArch::Aarch64) => {
-                anyhow::bail!("mu_msvm does not support AARCH64 with VS2022")
+            (Self::LegacyVs2022, _) => {
+                anyhow::bail!("mu_msvm does not publish VS2022 firmware")
             }
-            (Self::LegacyClangPdb, CommonArch::X86_64) => "firmware-RELEASE-X64-CLANGPDB.tar.gz",
+            (Self::LegacyClangPdb, CommonArch::X86_64) => {
+                "firmware-RELEASE-X64-CLANGPDB-legacy.tar.gz"
+            }
             (Self::LegacyClangPdb, CommonArch::Aarch64) => {
-                "firmware-RELEASE-AARCH64-CLANGPDB.tar.gz"
+                "firmware-RELEASE-AARCH64-CLANGPDB-legacy.tar.gz"
             }
-            (Self::PatinaClangPdb, CommonArch::X86_64) => {
-                "firmware-RELEASE-X64-CLANGPDB-patina.tar.gz"
-            }
+            (Self::PatinaClangPdb, CommonArch::X86_64) => "firmware-RELEASE-X64-CLANGPDB.tar.gz",
             (Self::PatinaClangPdb, CommonArch::Aarch64) => {
-                "firmware-RELEASE-AARCH64-CLANGPDB-patina.tar.gz"
+                "firmware-RELEASE-AARCH64-CLANGPDB.tar.gz"
             }
         })
     }

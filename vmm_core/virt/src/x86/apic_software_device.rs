@@ -295,3 +295,223 @@ impl MapVpciInterrupt for ApicSoftwareDevice {
         self.table.lock().unregister_interrupt(address, data)
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use pal_async::async_test;
+    use test_with_tracing::test;
+
+    /// Records every MSI delivered to the APICs.
+    #[derive(Default)]
+    struct RecordMsi(Mutex<Vec<(u64, u32)>>);
+
+    impl SignalMsi for RecordMsi {
+        fn signal_msi(&self, _devid: Option<u32>, address: u64, data: u32) {
+            self.0.lock().push((address, data));
+        }
+    }
+
+    impl RecordMsi {
+        /// Returns the destination APIC ID and vector of each delivered MSI.
+        fn take(&self) -> Vec<(u16, u8)> {
+            std::mem::take(&mut *self.0.lock())
+                .into_iter()
+                .map(|(address, data)| {
+                    let address = MsiAddress::from(address as u32);
+                    assert_eq!(address.address(), MSI_ADDRESS);
+                    (address.virt_destination(), MsiData::from(data).vector())
+                })
+                .collect()
+        }
+    }
+
+    /// VPs 0 through 3 have APIC IDs 0, 2, 4, and 0x123.
+    fn devices() -> ApicSoftwareDevices {
+        ApicSoftwareDevices::new(vec![0, 2, 4, 0x123])
+    }
+
+    fn params(vector: u32, target_processors: &[u32]) -> VpciInterruptParameters<'_> {
+        VpciInterruptParameters {
+            vector,
+            multicast: false,
+            target_processors,
+        }
+    }
+
+    // Test: Register two interrupts for a device, targeting VPs 2 and 3, and
+    //       signal each through the address it was given.
+    // Expected: The addresses are distinct and in the 0xfee00000 MSI range;
+    //       each signal is delivered to the APIC ID of its target VP
+    //       (including one above 255) with its vector.
+    #[async_test]
+    async fn registered_interrupts_reach_their_target_apic() {
+        let msi = Arc::new(RecordMsi::default());
+        let device = devices().new_device(msi.clone(), 1).unwrap();
+
+        let a = device
+            .register_interrupt(1, &params(0x41, &[2]))
+            .await
+            .unwrap();
+        let b = device
+            .register_interrupt(1, &params(0x52, &[3, 0]))
+            .await
+            .unwrap();
+        assert_ne!(a.address, b.address);
+        assert_eq!(a.address & !0xf_ffff, 0xfee0_0000);
+
+        device.signal_msi(None, a.address, a.data);
+        device.signal_msi(None, b.address, b.data);
+        assert_eq!(msi.take(), [(4, 0x41), (0x123, 0x52)]);
+    }
+
+    // Test: Register interrupts with no vectors, with no target VPs, and with
+    //       a target VP that doesn't exist, then register a valid one.
+    // Expected: Each invalid request fails without using a table slot, so the
+    //       valid one gets the first interrupt address.
+    #[async_test]
+    async fn invalid_registrations_are_rejected() {
+        let device = devices()
+            .new_device(Arc::new(RecordMsi::default()), 1)
+            .unwrap();
+
+        assert!(
+            device
+                .register_interrupt(0, &params(0x41, &[0]))
+                .await
+                .is_err()
+        );
+        assert!(
+            device
+                .register_interrupt(1, &params(0x41, &[]))
+                .await
+                .is_err()
+        );
+        assert!(
+            device
+                .register_interrupt(1, &params(0x41, &[9]))
+                .await
+                .is_err()
+        );
+
+        let valid = device
+            .register_interrupt(1, &params(0x41, &[0]))
+            .await
+            .unwrap();
+        assert_eq!(valid.address, 0xfee0_0000);
+    }
+
+    // Test: Retarget a registered interrupt to VP 1 with a new vector, then
+    //       retarget for an unknown device, an unknown interrupt address, and
+    //       a target VP that doesn't exist.
+    // Expected: The successful retarget changes where and how the interrupt
+    //       is delivered; the others fail with invalid device ID, invalid
+    //       parameter, and invalid parameter.
+    #[async_test]
+    async fn retarget_moves_interrupt_and_rejects_bad_input() {
+        let devices = devices();
+        let msi = Arc::new(RecordMsi::default());
+        let device = devices.new_device(msi.clone(), 7).unwrap();
+        let interrupt = device
+            .register_interrupt(1, &params(0x41, &[0]))
+            .await
+            .unwrap();
+
+        devices
+            .retarget_interrupt(7, interrupt.address, 0, &params(0x60, &[1, 3]))
+            .unwrap();
+        device.signal_msi(None, interrupt.address, 0);
+        assert_eq!(msi.take(), [(2, 0x60)]);
+
+        assert_eq!(
+            devices.retarget_interrupt(8, interrupt.address, 0, &params(0x60, &[1])),
+            Err(HvError::InvalidDeviceId)
+        );
+        assert_eq!(
+            devices.retarget_interrupt(7, interrupt.address + 4, 0, &params(0x60, &[1])),
+            Err(HvError::InvalidParameter)
+        );
+        assert_eq!(
+            devices.retarget_interrupt(7, interrupt.address, 0, &params(0x60, &[1, 9])),
+            Err(HvError::InvalidParameter)
+        );
+    }
+
+    // IGNORED: this test fails because of a known bug. retarget_interrupt
+    // stores the new vector and multicast flag before it validates the target
+    // VPs, and the first target before validating the remaining VPs. A failed
+    // retarget can therefore change the vector and destination. Re-enable
+    // this test together with the fix by removing #[ignore].
+    //
+    // Test: Retarget with an invalid first VP, then with a valid first VP
+    //       followed by an invalid VP, signaling after each failed request.
+    // Expected: Each failure preserves the original APIC and vector.
+    #[async_test]
+    #[ignore = "known bug: failed retarget changes the vector or destination"]
+    async fn failed_retarget_leaves_interrupt_unchanged() {
+        let devices = devices();
+        let msi = Arc::new(RecordMsi::default());
+        let device = devices.new_device(msi.clone(), 7).unwrap();
+        let interrupt = device
+            .register_interrupt(1, &params(0x41, &[2]))
+            .await
+            .unwrap();
+
+        for targets in [&[9][..], &[1, 9][..]] {
+            assert_eq!(
+                devices.retarget_interrupt(7, interrupt.address, 0, &params(0x60, targets)),
+                Err(HvError::InvalidParameter),
+                "targets: {targets:?}"
+            );
+            device.signal_msi(None, interrupt.address, 0);
+            assert_eq!(msi.take(), [(4, 0x41)], "targets: {targets:?}");
+        }
+    }
+
+    // Test: Unregister an interrupt and signal it, and signal an address that
+    //       was never registered.
+    // Expected: Neither signal is delivered.
+    #[async_test]
+    async fn unregistered_interrupts_are_dropped() {
+        let msi = Arc::new(RecordMsi::default());
+        let device = devices().new_device(msi.clone(), 1).unwrap();
+        let interrupt = device
+            .register_interrupt(1, &params(0x41, &[0]))
+            .await
+            .unwrap();
+
+        device.unregister_interrupt(interrupt.address, 0).await;
+        device.signal_msi(None, interrupt.address, 0);
+        device.signal_msi(None, 0xfee0_0010, 0);
+
+        assert!(msi.take().is_empty());
+    }
+
+    // Test: Create a device, create another with the same ID, signal an
+    //       interrupt, then drop the first device and reuse its ID.
+    // Expected: The duplicate ID is rejected while the first device exists
+    //       and its interrupt still works; after the drop, retargeting its interrupts
+    //       fails with an invalid device ID and the ID can be used again.
+    #[async_test]
+    async fn device_ids_are_unique_until_dropped() {
+        let devices = devices();
+        let msi = Arc::new(RecordMsi::default());
+        let device = devices.new_device(msi.clone(), 5).unwrap();
+        let interrupt = device
+            .register_interrupt(1, &params(0x41, &[0]))
+            .await
+            .unwrap();
+
+        let err = devices.new_device(msi.clone(), 5).err().unwrap();
+        assert_eq!(err.to_string(), "device id 5 is already in use");
+        device.signal_msi(None, interrupt.address, interrupt.data);
+        assert_eq!(msi.take(), [(0, 0x41)]);
+
+        drop(device);
+        assert_eq!(
+            devices.retarget_interrupt(5, interrupt.address, 0, &params(0x41, &[0])),
+            Err(HvError::InvalidDeviceId)
+        );
+        devices.new_device(msi, 5).unwrap();
+    }
+}

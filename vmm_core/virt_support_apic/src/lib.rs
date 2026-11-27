@@ -2025,6 +2025,12 @@ mod tests {
     #[derive(Default)]
     struct TestClient {
         cr8: u32,
+        apic_base: u64,
+        wakes: Vec<u32>,
+        eois: Vec<u8>,
+        now_100ns: u64,
+        offload_irr: [u32; 8],
+        offload_isr: [u32; 8],
     }
 
     impl ApicClient for TestClient {
@@ -2036,18 +2042,27 @@ mod tests {
             self.cr8 = value;
         }
 
-        fn set_apic_base(&mut self, _value: u64) {}
+        fn set_apic_base(&mut self, value: u64) {
+            self.apic_base = value;
+        }
 
-        fn wake(&mut self, _vp_index: VpIndex) {}
+        fn wake(&mut self, vp_index: VpIndex) {
+            self.wakes.push(vp_index.index());
+        }
 
-        fn eoi(&mut self, _vector: u8) {}
+        fn eoi(&mut self, vector: u8) {
+            self.eois.push(vector);
+        }
 
         fn now(&mut self) -> VmTime {
-            VmTime::from_100ns(0)
+            VmTime::from_100ns(self.now_100ns)
         }
 
         fn pull_offload(&mut self) -> ([u32; 8], [u32; 8]) {
-            unreachable!()
+            (
+                std::mem::take(&mut self.offload_irr),
+                std::mem::take(&mut self.offload_isr),
+            )
         }
     }
 
@@ -2320,5 +2335,1350 @@ mod tests {
         // supported; the stale auto-EOI bit must not block it.
         apic.enable_offload();
         assert!(apic.push_to_offload(|_, _, _| {}).is_ok());
+    }
+
+    const LEVEL_VECTOR: u8 = 0x52;
+    const LVT_MASKED: u32 = 1 << 16;
+    const LVT_PERIODIC: u32 = 1 << 17;
+
+    fn vp(vp_index: u32, apic_id: u32) -> X86VpInfo {
+        X86VpInfo {
+            base: VpInfo {
+                vp_index: VpIndex::new(vp_index),
+                vnode: 0,
+            },
+            apic_id,
+        }
+    }
+
+    /// Adds a software-enabled xAPIC to `set`.
+    fn add_enabled(
+        set: &LocalApicSet,
+        vp_index: u32,
+        apic_id: u32,
+        client: &mut TestClient,
+    ) -> LocalApic {
+        let mut apic = set.add_apic(&vp(vp_index, apic_id), false);
+        software_enable(&mut apic, client);
+        apic
+    }
+
+    fn enter_x2apic(apic: &mut LocalApic, client: &mut TestClient) {
+        apic.access(client)
+            .msr_write(
+                X86X_MSR_APIC_BASE,
+                ApicBase::from(apic_base(true)).with_x2apic(true).into(),
+            )
+            .unwrap();
+    }
+
+    fn mmio_addr(reg: ApicRegister) -> u64 {
+        ((APIC_BASE_PAGE as u64) << 12) | ((reg.0 as u64) << 4)
+    }
+
+    fn mmio_read(apic: &mut LocalApic, client: &mut TestClient, address: u64) -> u32 {
+        let mut data = [0; 4];
+        apic.access(client).mmio_read(address, &mut data);
+        u32::from_ne_bytes(data)
+    }
+
+    /// Reads a register through the guest interface for the APIC's mode.
+    fn read_reg(apic: &mut LocalApic, client: &mut TestClient, reg: ApicRegister) -> u32 {
+        if apic.x2apic_enabled() {
+            apic.access(client)
+                .msr_read(X2APIC_MSR_BASE + reg.0 as u32)
+                .unwrap() as u32
+        } else {
+            mmio_read(apic, client, mmio_addr(reg))
+        }
+    }
+
+    /// Writes a register through the guest interface for the APIC's mode.
+    fn write_reg(apic: &mut LocalApic, client: &mut TestClient, reg: ApicRegister, value: u32) {
+        if apic.x2apic_enabled() {
+            apic.access(client)
+                .msr_write(X2APIC_MSR_BASE + reg.0 as u32, value.into())
+                .unwrap();
+        } else {
+            apic.access(client)
+                .mmio_write(mmio_addr(reg), &value.to_ne_bytes());
+        }
+    }
+
+    /// Returns the interrupt the APIC would deliver next. The guest-visible
+    /// IRR read collects interrupts requested by other sources.
+    fn pending(apic: &mut LocalApic, client: &mut TestClient) -> Option<u8> {
+        read_reg(apic, client, ApicRegister::IRR0);
+        apic.next_irr()
+    }
+
+    /// Delivers `vector` on each APIC that has it pending and completes it
+    /// with an EOI, returning the indexes of those APICs.
+    fn deliver(apics: &mut [LocalApic], client: &mut TestClient, vector: u8) -> Vec<usize> {
+        let mut delivered = Vec::new();
+        for (i, apic) in apics.iter_mut().enumerate() {
+            if pending(apic, client) == Some(vector) {
+                apic.acknowledge_interrupt(vector);
+                write_reg(apic, client, ApicRegister::EOI, 0);
+                delivered.push(i);
+            }
+        }
+        delivered
+    }
+
+    fn msi(
+        set: &LocalApicSet,
+        destination: u8,
+        logical: bool,
+        vector: u8,
+        mode: DeliveryMode,
+        level: bool,
+    ) -> Vec<u32> {
+        let address = MsiAddress::new()
+            .with_address(x86defs::msi::MSI_ADDRESS)
+            .with_destination(destination)
+            .with_destination_mode_logical(logical);
+        let data = MsiData::new()
+            .with_vector(vector)
+            .with_delivery_mode(mode.0)
+            .with_trigger_mode_level(level);
+        let mut woken = Vec::new();
+        set.request_interrupt(u32::from(address).into(), data.into(), |vp| {
+            woken.push(vp.index())
+        });
+        woken
+    }
+
+    fn fixed_msi(set: &LocalApicSet, apic_id: u8, vector: u8, level: bool) -> Vec<u32> {
+        msi(set, apic_id, false, vector, DeliveryMode::FIXED, level)
+    }
+
+    fn ipi(vector: u8, mode: DeliveryMode) -> Icr {
+        Icr::new()
+            .with_vector(vector)
+            .with_delivery_mode(mode.0)
+            .with_level_assert(true)
+    }
+
+    fn send_xapic_ipi(apic: &mut LocalApic, client: &mut TestClient, icr: Icr) {
+        let icr = u64::from(icr);
+        write_reg(apic, client, ApicRegister::ICR1, (icr >> 32) as u32);
+        write_reg(apic, client, ApicRegister::ICR0, icr as u32);
+    }
+
+    fn send_x2apic_ipi(apic: &mut LocalApic, client: &mut TestClient, icr: Icr) {
+        apic.access(client)
+            .msr_write(ApicRegister::ICR0.x2apic_msr(), icr.into())
+            .unwrap();
+    }
+
+    fn bit(vector: u8) -> (ApicRegister, u32) {
+        (ApicRegister(vector / 32), 1 << (vector % 32))
+    }
+
+    fn isr_bit_set(apic: &mut LocalApic, client: &mut TestClient, vector: u8) -> bool {
+        let (bank, mask) = bit(vector);
+        read_reg(apic, client, ApicRegister(ApicRegister::ISR0.0 + bank.0)) & mask != 0
+    }
+
+    fn tmr_bit_set(apic: &mut LocalApic, client: &mut TestClient, vector: u8) -> bool {
+        let (bank, mask) = bit(vector);
+        read_reg(apic, client, ApicRegister(ApicRegister::TMR0.0 + bank.0)) & mask != 0
+    }
+
+    #[test]
+    fn interrupts_are_delivered_by_priority_until_eoi() {
+        // Test: fixed MSIs at several priorities, delivered and completed one
+        // at a time, with one level-triggered vector.
+        // Expected: the highest vector goes first, a pending vector of equal
+        // or lower priority waits for EOI, a higher one preempts, and only the
+        // level-triggered EOI is forwarded to the IO-APIC.
+        let set = LocalApicSet::builder().build();
+        let mut client = TestClient::default();
+        let mut apic = add_enabled(&set, 0, 0, &mut client);
+
+        assert_eq!(fixed_msi(&set, 0, 0x55, false), [0]);
+        assert_eq!(fixed_msi(&set, 0, 0x55, false), [] as [u32; 0]);
+        fixed_msi(&set, 0, LEVEL_VECTOR, true);
+        fixed_msi(&set, 0, 0x31, false);
+
+        assert_eq!(pending(&mut apic, &mut client), Some(0x55));
+        apic.acknowledge_interrupt(0x55);
+        assert!(isr_bit_set(&mut apic, &mut client, 0x55));
+        assert_eq!(read_reg(&mut apic, &mut client, ApicRegister::PPR), 0x50);
+        assert_eq!(pending(&mut apic, &mut client), None);
+
+        write_reg(&mut apic, &mut client, ApicRegister::EOI, 0);
+        assert!(!isr_bit_set(&mut apic, &mut client, 0x55));
+        assert_eq!(pending(&mut apic, &mut client), Some(LEVEL_VECTOR));
+        apic.acknowledge_interrupt(LEVEL_VECTOR);
+        assert!(tmr_bit_set(&mut apic, &mut client, LEVEL_VECTOR));
+
+        fixed_msi(&set, 0, 0x80, false);
+        assert_eq!(pending(&mut apic, &mut client), Some(0x80));
+        apic.acknowledge_interrupt(0x80);
+        write_reg(&mut apic, &mut client, ApicRegister::EOI, 0);
+        assert!(client.eois.is_empty());
+
+        write_reg(&mut apic, &mut client, ApicRegister::EOI, 0);
+        assert_eq!(client.eois, [LEVEL_VECTOR]);
+        assert_eq!(pending(&mut apic, &mut client), Some(0x31));
+        apic.acknowledge_interrupt(0x31);
+        write_reg(&mut apic, &mut client, ApicRegister::EOI, 0);
+
+        write_reg(&mut apic, &mut client, ApicRegister::EOI, 0);
+        assert_eq!(client.eois, [LEVEL_VECTOR]);
+        assert_eq!(pending(&mut apic, &mut client), None);
+    }
+
+    #[test]
+    fn software_disabled_apic_drops_fixed_interrupts_and_masks_lvts() {
+        // Test: fixed interrupts sent while the APIC is software-disabled or
+        // with reserved vectors, and LVT programming across an SVR disable.
+        // Expected: those interrupts are dropped without waking the VP, SVR
+        // keeps only its vector and enable bits, and every LVT reads masked
+        // while the APIC is software-disabled.
+        let set = LocalApicSet::builder().build();
+        let mut client = TestClient::default();
+        let mut apic = set.add_apic(&vp(0, 0), false);
+
+        assert_eq!(fixed_msi(&set, 0, 0x40, false), [] as [u32; 0]);
+        software_enable(&mut apic, &mut client);
+        assert_eq!(pending(&mut apic, &mut client), None);
+
+        assert_eq!(fixed_msi(&set, 0, 15, false), [] as [u32; 0]);
+        assert_eq!(pending(&mut apic, &mut client), None);
+        fixed_msi(&set, 0, 16, false);
+        assert_eq!(pending(&mut apic, &mut client), Some(16));
+
+        write_reg(&mut apic, &mut client, ApicRegister::SVR, !0);
+        assert_eq!(read_reg(&mut apic, &mut client, ApicRegister::SVR), 0x1ff);
+
+        let lvts = [
+            ApicRegister::LVT_TIMER,
+            ApicRegister::LVT_THERMAL,
+            ApicRegister::LVT_PMC,
+            ApicRegister::LVT_LINT0,
+            ApicRegister::LVT_LINT1,
+            ApicRegister::LVT_ERROR,
+        ];
+        for reg in lvts {
+            write_reg(&mut apic, &mut client, reg, 0x40);
+            assert_eq!(read_reg(&mut apic, &mut client, reg), 0x40, "{reg:?}");
+        }
+
+        write_reg(&mut apic, &mut client, ApicRegister::SVR, 0xff);
+        for reg in lvts {
+            assert_eq!(
+                read_reg(&mut apic, &mut client, reg),
+                0x40 | LVT_MASKED,
+                "{reg:?}"
+            );
+        }
+        write_reg(&mut apic, &mut client, ApicRegister::LVT_ERROR, 0x41);
+        assert_eq!(
+            read_reg(&mut apic, &mut client, ApicRegister::LVT_ERROR),
+            0x41 | LVT_MASKED
+        );
+        assert_eq!(fixed_msi(&set, 0, 0x60, false), [] as [u32; 0]);
+    }
+
+    #[test]
+    fn xapic_ipis_reach_the_addressed_processors() {
+        // Test: fixed IPIs sent through the xAPIC ICR with physical, flat
+        // logical, cluster logical, broadcast, and shorthand destinations.
+        // Expected: each IPI reaches exactly the addressed APICs, and a
+        // physical IPI wakes only its target.
+        let set = LocalApicSet::builder().build();
+        let mut client = TestClient::default();
+        let mut apics: Vec<_> = (0..4)
+            .map(|i| add_enabled(&set, i, i, &mut client))
+            .collect();
+
+        send_xapic_ipi(
+            &mut apics[0],
+            &mut client,
+            ipi(0x60, DeliveryMode::FIXED).with_xapic_mda(2),
+        );
+        assert_eq!(client.wakes, [2]);
+        assert_eq!(deliver(&mut apics, &mut client, 0x60), [2]);
+
+        write_reg(&mut apics[1], &mut client, ApicRegister::LDR, 0x02 << 24);
+        write_reg(&mut apics[3], &mut client, ApicRegister::LDR, 0x08 << 24);
+        send_xapic_ipi(
+            &mut apics[0],
+            &mut client,
+            ipi(0x61, DeliveryMode::FIXED)
+                .with_destination_mode_logical(true)
+                .with_xapic_mda(0x0a),
+        );
+        assert_eq!(deliver(&mut apics, &mut client, 0x61), [1, 3]);
+
+        for (apic, ldr) in apics.iter_mut().zip([0x00, 0x11, 0x12, 0x21]) {
+            write_reg(apic, &mut client, ApicRegister::DFR, 0x0fff_ffff);
+            write_reg(apic, &mut client, ApicRegister::LDR, ldr << 24);
+        }
+        assert_eq!(
+            read_reg(&mut apics[1], &mut client, ApicRegister::DFR),
+            0x0fff_ffff
+        );
+        send_xapic_ipi(
+            &mut apics[0],
+            &mut client,
+            ipi(0x62, DeliveryMode::FIXED)
+                .with_destination_mode_logical(true)
+                .with_xapic_mda(0x13),
+        );
+        assert_eq!(deliver(&mut apics, &mut client, 0x62), [1, 2]);
+
+        send_xapic_ipi(
+            &mut apics[0],
+            &mut client,
+            ipi(0x63, DeliveryMode::FIXED).with_xapic_mda(0xff),
+        );
+        assert_eq!(deliver(&mut apics, &mut client, 0x63), [0, 1, 2, 3]);
+
+        for (shorthand, vector, expected) in [
+            (DestinationShorthand::SELF, 0x64, &[0][..]),
+            (
+                DestinationShorthand::ALL_INCLUDING_SELF,
+                0x65,
+                &[0, 1, 2, 3][..],
+            ),
+            (
+                DestinationShorthand::ALL_EXCLUDING_SELF,
+                0x66,
+                &[1, 2, 3][..],
+            ),
+        ] {
+            send_xapic_ipi(
+                &mut apics[0],
+                &mut client,
+                ipi(vector, DeliveryMode::FIXED)
+                    .with_destination_shorthand(shorthand.0)
+                    .with_xapic_mda(2),
+            );
+            assert_eq!(
+                deliver(&mut apics, &mut client, vector),
+                expected,
+                "{shorthand:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn x2apic_ipis_use_32_bit_destinations() {
+        // Test: IPIs sent through the 64-bit x2APIC ICR MSR and the self-IPI
+        // MSR, including broadcast and lowest-priority delivery.
+        // Expected: physical and broadcast IPIs reach the addressed APICs,
+        // the ICR reads back whole, ICR1 is not accessible, and
+        // lowest-priority IPIs are dropped.
+        let set = LocalApicSet::builder().x2apic_capable(true).build();
+        let mut client = TestClient::default();
+        let mut apics: Vec<_> = [0, 1, 0x105]
+            .into_iter()
+            .enumerate()
+            .map(|(i, id)| {
+                let mut apic = add_enabled(&set, i as u32, id, &mut client);
+                enter_x2apic(&mut apic, &mut client);
+                apic
+            })
+            .collect();
+
+        let icr = ipi(0x70, DeliveryMode::FIXED).with_x2apic_mda(0x105);
+        send_x2apic_ipi(&mut apics[0], &mut client, icr);
+        assert_eq!(
+            apics[0]
+                .access(&mut client)
+                .msr_read(ApicRegister::ICR0.x2apic_msr())
+                .unwrap(),
+            u64::from(icr)
+        );
+        assert!(
+            apics[0]
+                .access(&mut client)
+                .msr_read(ApicRegister::ICR1.x2apic_msr())
+                .is_err()
+        );
+        assert_eq!(deliver(&mut apics, &mut client, 0x70), [2]);
+
+        send_x2apic_ipi(
+            &mut apics[0],
+            &mut client,
+            ipi(0x71, DeliveryMode::FIXED).with_x2apic_mda(!0),
+        );
+        assert_eq!(deliver(&mut apics, &mut client, 0x71), [0, 1, 2]);
+
+        send_x2apic_ipi(
+            &mut apics[0],
+            &mut client,
+            ipi(0x72, DeliveryMode::LOWEST_PRIORITY).with_x2apic_mda(1),
+        );
+        assert_eq!(deliver(&mut apics, &mut client, 0x72), [] as [usize; 0]);
+
+        write_reg(&mut apics[1], &mut client, ApicRegister::SELF_IPI, 0x73);
+        assert_eq!(deliver(&mut apics, &mut client, 0x73), [1]);
+    }
+
+    #[test]
+    fn special_delivery_modes_become_processor_work() {
+        // Test: NMI, INIT assert, INIT de-assert, SIPI, and EXTINT IPIs, plus
+        // LINT pulses with EXTINT, NMI, and masked LVT entries.
+        // Expected: NMI, INIT, SIPI, and LINT-driven EXTINT/NMI are reported
+        // once as work for the target and wake it; INIT de-assert, EXTINT
+        // IPIs, and masked LINTs do nothing; no fixed interrupt is queued.
+        let set = LocalApicSet::builder().build();
+        let mut client = TestClient::default();
+        let mut sender = add_enabled(&set, 0, 0, &mut client);
+        let mut target = add_enabled(&set, 1, 1, &mut client);
+
+        send_xapic_ipi(
+            &mut sender,
+            &mut client,
+            ipi(0, DeliveryMode::NMI).with_xapic_mda(1),
+        );
+        assert_eq!(client.wakes, [1]);
+        let work = target.flush();
+        assert!(work.nmi && !work.init && !work.extint && work.sipi.is_none());
+        assert!(!target.flush().nmi);
+
+        send_xapic_ipi(
+            &mut sender,
+            &mut client,
+            ipi(0, DeliveryMode::INIT).with_xapic_mda(1),
+        );
+        assert!(target.flush().init);
+
+        send_xapic_ipi(
+            &mut sender,
+            &mut client,
+            ipi(0, DeliveryMode::INIT)
+                .with_level_assert(false)
+                .with_trigger_mode_level(true)
+                .with_xapic_mda(1),
+        );
+        assert!(!target.flush().init);
+
+        send_xapic_ipi(
+            &mut sender,
+            &mut client,
+            ipi(0x9a, DeliveryMode::SIPI).with_xapic_mda(1),
+        );
+        assert_eq!(target.flush().sipi, Some(0x9a));
+
+        send_xapic_ipi(
+            &mut sender,
+            &mut client,
+            ipi(0x30, DeliveryMode::EXTINT).with_xapic_mda(1),
+        );
+        assert!(!target.flush().extint);
+        assert_eq!(pending(&mut target, &mut client), None);
+
+        write_reg(&mut target, &mut client, ApicRegister::LVT_LINT0, 0x700);
+        write_reg(&mut target, &mut client, ApicRegister::LVT_LINT1, 0x400);
+        let mut woken = Vec::new();
+        set.lint(VpIndex::new(1), 0, |vp| woken.push(vp.index()));
+        set.lint(VpIndex::new(1), 1, |vp| woken.push(vp.index()));
+        assert_eq!(woken, [1]);
+        let work = target.flush();
+        assert!(work.extint && work.nmi);
+
+        write_reg(
+            &mut target,
+            &mut client,
+            ApicRegister::LVT_LINT1,
+            0x400 | LVT_MASKED,
+        );
+        set.lint(VpIndex::new(1), 1, |_| panic!("masked lint woke a VP"));
+        assert!(!target.flush().nmi);
+    }
+
+    #[test]
+    fn apic_base_msr_enforces_mode_transitions() {
+        // Test: APIC base MSR writes with reserved bits, a cleared BSP bit, a
+        // relocated base, disable and re-enable, and xAPIC/x2APIC changes.
+        // Expected: invalid writes fault and change nothing, BSP is read-only,
+        // disabling hides the MMIO page and resets registers, x2APIC needs the
+        // capability, and leaving x2APIC requires a disable first.
+        let set = LocalApicSet::builder().build();
+        let mut client = TestClient::default();
+        let mut apic = add_enabled(&set, 0, 0, &mut client);
+        let initial = apic.apic_base();
+        assert!(ApicBase::from(initial).bsp());
+        assert_eq!(
+            apic.base_address(),
+            Some(x86defs::apic::APIC_BASE_ADDRESS.into())
+        );
+
+        for bad in [
+            initial | 1,
+            ApicBase::from(initial).with_x2apic(true).into(),
+        ] {
+            assert!(matches!(
+                apic.access(&mut client).msr_write(X86X_MSR_APIC_BASE, bad),
+                Err(MsrError::InvalidAccess)
+            ));
+            assert_eq!(apic.apic_base(), initial);
+        }
+
+        let relocated = ApicBase::from(initial)
+            .with_bsp(false)
+            .with_base_page(0xfed00);
+        apic.access(&mut client)
+            .msr_write(X86X_MSR_APIC_BASE, relocated.into())
+            .unwrap();
+        assert!(ApicBase::from(apic.apic_base()).bsp());
+        assert_eq!(apic.base_address(), Some(0xfed0_0000));
+        assert_eq!(client.apic_base, apic.apic_base());
+        apic.access(&mut client)
+            .msr_write(X86X_MSR_APIC_BASE, initial)
+            .unwrap();
+
+        write_reg(&mut apic, &mut client, ApicRegister::LVT_TIMER, 0x40);
+        write_reg(&mut apic, &mut client, ApicRegister::LDR, 0x0100_0000);
+        apic.access(&mut client)
+            .msr_write(X86X_MSR_APIC_BASE, apic_base(false))
+            .unwrap();
+        assert_eq!(apic.base_address(), None);
+        assert_eq!(mmio_read(&mut apic, &mut client, SVR_ADDR), !0);
+        apic.access(&mut client)
+            .msr_write(X86X_MSR_APIC_BASE, apic_base(true))
+            .unwrap();
+        assert_eq!(read_reg(&mut apic, &mut client, ApicRegister::SVR), 0xff);
+        assert_eq!(read_reg(&mut apic, &mut client, ApicRegister::LDR), 0);
+        assert_eq!(
+            read_reg(&mut apic, &mut client, ApicRegister::LVT_TIMER),
+            LVT_MASKED
+        );
+
+        let set = LocalApicSet::builder().x2apic_capable(true).build();
+        let mut apic = set.add_apic(&vp(0, 0), false);
+        let x2apic = ApicBase::from(apic_base(true)).with_x2apic(true);
+        assert!(
+            apic.access(&mut client)
+                .msr_write(X86X_MSR_APIC_BASE, x2apic.with_enable(false).into())
+                .is_err()
+        );
+        enter_x2apic(&mut apic, &mut client);
+        assert!(apic.x2apic_enabled());
+        assert_eq!(apic.base_address(), None);
+        assert!(
+            apic.access(&mut client)
+                .msr_write(X86X_MSR_APIC_BASE, apic_base(true))
+                .is_err()
+        );
+        assert!(apic.x2apic_enabled());
+        apic.access(&mut client)
+            .msr_write(X86X_MSR_APIC_BASE, apic_base(false))
+            .unwrap();
+        apic.access(&mut client)
+            .msr_write(X86X_MSR_APIC_BASE, apic_base(true))
+            .unwrap();
+        assert!(!apic.x2apic_enabled());
+    }
+
+    #[test]
+    fn mmio_access_rules() {
+        // Test: xAPIC MMIO reads and writes of various sizes and alignments,
+        // and MMIO access after switching to x2APIC or disabling the APIC.
+        // Expected: aligned accesses and high-byte ID reads work, wide reads
+        // are zero-extended, unaligned or out-of-mode accesses read all ones,
+        // and writes to read-only registers have no effect.
+        let set = LocalApicSet::builder().x2apic_capable(true).build();
+        let mut client = TestClient::default();
+        let mut apic = add_enabled(&set, 0, 3, &mut client);
+
+        assert_eq!(read_reg(&mut apic, &mut client, ApicRegister::ID), 3 << 24);
+        assert_eq!(
+            read_reg(&mut apic, &mut client, ApicRegister::VERSION),
+            APIC_VERSION
+        );
+        let mut byte = [0];
+        apic.access(&mut client)
+            .mmio_read(mmio_addr(ApicRegister::ID) + 3, &mut byte);
+        assert_eq!(byte, [3]);
+        let mut wide = [0xcc; 8];
+        apic.access(&mut client)
+            .mmio_read(mmio_addr(ApicRegister::VERSION), &mut wide);
+        assert_eq!(wide[..4], APIC_VERSION.to_ne_bytes());
+        assert_eq!(wide[4..], [0; 4]);
+
+        for address in [
+            mmio_addr(ApicRegister::VERSION) + 1,
+            mmio_addr(ApicRegister::VERSION) + 3,
+        ] {
+            assert_eq!(mmio_read(&mut apic, &mut client, address), !0);
+        }
+        assert_eq!(
+            mmio_read(&mut apic, &mut client, mmio_addr(ApicRegister(0x4))),
+            0
+        );
+
+        write_reg(&mut apic, &mut client, ApicRegister::VERSION, 0);
+        write_reg(&mut apic, &mut client, ApicRegister::ID, 7 << 24);
+        assert_eq!(
+            read_reg(&mut apic, &mut client, ApicRegister::VERSION),
+            APIC_VERSION
+        );
+        assert_eq!(read_reg(&mut apic, &mut client, ApicRegister::ID), 3 << 24);
+
+        enter_x2apic(&mut apic, &mut client);
+        assert_eq!(mmio_read(&mut apic, &mut client, SVR_ADDR), !0);
+        apic.access(&mut client).mmio_write(SVR_ADDR, &[0; 4]);
+        assert_eq!(
+            read_reg(&mut apic, &mut client, ApicRegister::SVR),
+            SVR_ENABLED
+        );
+    }
+
+    #[test]
+    fn x2apic_msrs_follow_x2apic_rules() {
+        // Test: x2APIC MSR access to ID, LDR, DFR, EOI, ESR, and TPR, and the
+        // same MSRs while the APIC is still in xAPIC mode.
+        // Expected: ID and LDR derive from the APIC ID and are read-only, DFR
+        // is absent, non-zero EOI/ESR writes fault, TPR maps to CR8, and the
+        // MSRs are unknown outside x2APIC mode.
+        let set = LocalApicSet::builder().x2apic_capable(true).build();
+        let mut client = TestClient::default();
+        let mut apic = add_enabled(&set, 0, 0x23, &mut client);
+
+        assert!(matches!(
+            apic.access(&mut client)
+                .msr_read(ApicRegister::ID.x2apic_msr()),
+            Err(MsrError::Unknown)
+        ));
+
+        enter_x2apic(&mut apic, &mut client);
+        assert_eq!(read_reg(&mut apic, &mut client, ApicRegister::ID), 0x23);
+        assert_eq!(
+            read_reg(&mut apic, &mut client, ApicRegister::LDR),
+            (2 << 16) | (1 << 3)
+        );
+
+        let mut access = apic.access(&mut client);
+        for (reg, value) in [
+            (ApicRegister::LDR, 0),
+            (ApicRegister::ID, 0),
+            (ApicRegister::DFR, !0),
+            (ApicRegister::EOI, 1),
+            (ApicRegister::ESR, 1),
+        ] {
+            assert!(
+                matches!(
+                    access.msr_write(reg.x2apic_msr(), value),
+                    Err(MsrError::InvalidAccess)
+                ),
+                "{reg:?}"
+            );
+        }
+        assert!(access.msr_read(ApicRegister::DFR.x2apic_msr()).is_err());
+        access.msr_write(ApicRegister::EOI.x2apic_msr(), 0).unwrap();
+        access.msr_write(ApicRegister::ESR.x2apic_msr(), 0).unwrap();
+
+        access
+            .msr_write(ApicRegister::TPR.x2apic_msr(), 0x80)
+            .unwrap();
+        assert_eq!(
+            access.msr_read(ApicRegister::TPR.x2apic_msr()).unwrap(),
+            0x80
+        );
+        assert_eq!(client.cr8, 8);
+    }
+
+    #[test]
+    fn timer_counts_down_and_fires() {
+        // Test: one-shot, periodic, and masked timers advanced with a
+        // controlled clock and observed through the current-count register.
+        // Expected: the count falls at the configured divide rate, one-shot
+        // fires once and stops, periodic fires and reloads (keeping the
+        // remainder), and a masked timer runs out without an interrupt.
+        // The APIC timer runs at 200 MHz, so one 100ns clock step is 20 ticks.
+        let set = LocalApicSet::builder().build();
+        let mut client = TestClient::default();
+
+        let mut apic = add_enabled(&set, 0, 0, &mut client);
+        write_reg(&mut apic, &mut client, ApicRegister::TIMER_DCR, !0);
+        assert_eq!(
+            read_reg(&mut apic, &mut client, ApicRegister::TIMER_DCR),
+            0xb
+        );
+        write_reg(&mut apic, &mut client, ApicRegister::LVT_TIMER, 0x70);
+        write_reg(&mut apic, &mut client, ApicRegister::TIMER_ICR, 1000);
+        client.now_100ns = 10;
+        assert_eq!(
+            read_reg(&mut apic, &mut client, ApicRegister::TIMER_CCR),
+            800
+        );
+        assert_eq!(pending(&mut apic, &mut client), None);
+        client.now_100ns = 50;
+        assert_eq!(read_reg(&mut apic, &mut client, ApicRegister::TIMER_CCR), 0);
+        assert_eq!(
+            deliver(std::slice::from_mut(&mut apic), &mut client, 0x70),
+            [0]
+        );
+        client.now_100ns = 100;
+        assert_eq!(read_reg(&mut apic, &mut client, ApicRegister::TIMER_CCR), 0);
+        assert_eq!(pending(&mut apic, &mut client), None);
+        assert_eq!(
+            read_reg(&mut apic, &mut client, ApicRegister::TIMER_ICR),
+            1000
+        );
+
+        let set = LocalApicSet::builder().build();
+        let mut apic = add_enabled(&set, 0, 0, &mut client);
+        write_reg(
+            &mut apic,
+            &mut client,
+            ApicRegister::LVT_TIMER,
+            0x71 | LVT_PERIODIC,
+        );
+        write_reg(&mut apic, &mut client, ApicRegister::TIMER_DCR, 0);
+        write_reg(&mut apic, &mut client, ApicRegister::TIMER_ICR, 100);
+        client.now_100ns = 125;
+        assert_eq!(
+            read_reg(&mut apic, &mut client, ApicRegister::TIMER_CCR),
+            50
+        );
+        assert_eq!(
+            deliver(std::slice::from_mut(&mut apic), &mut client, 0x71),
+            [0]
+        );
+        client.now_100ns = 130;
+        assert_eq!(
+            read_reg(&mut apic, &mut client, ApicRegister::TIMER_CCR),
+            100
+        );
+        assert_eq!(
+            deliver(std::slice::from_mut(&mut apic), &mut client, 0x71),
+            [0]
+        );
+
+        let set = LocalApicSet::builder().build();
+        let mut apic = add_enabled(&set, 0, 0, &mut client);
+        write_reg(
+            &mut apic,
+            &mut client,
+            ApicRegister::LVT_TIMER,
+            0x72 | LVT_MASKED,
+        );
+        write_reg(&mut apic, &mut client, ApicRegister::TIMER_ICR, 10);
+        client.now_100ns = 200;
+        assert_eq!(read_reg(&mut apic, &mut client, ApicRegister::TIMER_CCR), 0);
+        assert_eq!(pending(&mut apic, &mut client), None);
+    }
+
+    #[test]
+    fn save_restore_round_trips_guest_visible_state() {
+        // Test: save an APIC with programmed registers, in-service and pending
+        // interrupts, then restore it into a fresh APIC, and restore a saved
+        // state whose APIC base is disabled.
+        // Expected: the restored APIC saves identically and delivers and
+        // completes the same interrupts (including the level-triggered EOI);
+        // a disabled restore keeps the reset register state.
+        let set = LocalApicSet::builder().build();
+        let mut client = TestClient::default();
+        let mut apic = add_enabled(&set, 0, 0, &mut client);
+        for (reg, value) in [
+            (ApicRegister::DFR, 0x0fff_ffff),
+            (ApicRegister::LDR, 0x0500_0000),
+            (ApicRegister::LVT_TIMER, 0x40 | LVT_PERIODIC),
+            (ApicRegister::LVT_LINT0, 0x700),
+            (ApicRegister::TIMER_DCR, 0x3),
+            (ApicRegister::TIMER_ICR, 500),
+        ] {
+            write_reg(&mut apic, &mut client, reg, value);
+        }
+        send_xapic_ipi(
+            &mut apic,
+            &mut client,
+            ipi(0x30, DeliveryMode::FIXED).with_xapic_mda(9),
+        );
+        fixed_msi(&set, 0, 0x45, true);
+        assert_eq!(pending(&mut apic, &mut client), Some(0x45));
+        apic.acknowledge_interrupt(0x45);
+        fixed_msi(&set, 0, 0x61, false);
+        fixed_msi(&set, 0, 0x32, false);
+        let saved = apic.save();
+
+        let set = LocalApicSet::builder().build();
+        let mut restored = set.add_apic(&vp(0, 0), false);
+        restored.restore(&saved).unwrap();
+        assert_eq!(restored.save(), saved);
+        assert_eq!(
+            read_reg(&mut restored, &mut client, ApicRegister::LVT_LINT0),
+            0x700
+        );
+        assert_eq!(
+            deliver(std::slice::from_mut(&mut restored), &mut client, 0x61),
+            [0]
+        );
+        assert!(client.eois.is_empty());
+        write_reg(&mut restored, &mut client, ApicRegister::EOI, 0);
+        assert_eq!(client.eois, [0x45]);
+        assert_eq!(pending(&mut restored, &mut client), Some(0x32));
+
+        let mut disabled = saved.clone();
+        disabled.apic_base = apic_base(false);
+        let set = LocalApicSet::builder().build();
+        let mut restored = set.add_apic(&vp(0, 0), false);
+        restored.restore(&disabled).unwrap();
+        assert_eq!(restored.base_address(), None);
+        restored
+            .access(&mut client)
+            .msr_write(X86X_MSR_APIC_BASE, apic_base(true))
+            .unwrap();
+        assert_eq!(
+            read_reg(&mut restored, &mut client, ApicRegister::SVR),
+            0xff
+        );
+        assert_eq!(
+            read_reg(&mut restored, &mut client, ApicRegister::LVT_LINT0),
+            LVT_MASKED
+        );
+        assert_eq!(pending(&mut restored, &mut client), None);
+    }
+
+    #[test]
+    fn hyperv_apic_msrs() {
+        // Test: the Hyper-V frequency, TPR, EOI, and ICR MSRs with and without
+        // enlightenments enabled, and with the APIC disabled.
+        // Expected: with enlightenments they report the timer frequency, map
+        // TPR to CR8 with a range check, perform EOI, and send IPIs; without
+        // them, or when misused, they fault.
+        let set = LocalApicSet::builder().hyperv_enlightenments(true).build();
+        let mut client = TestClient::default();
+        let mut apics: Vec<_> = (0..2)
+            .map(|i| add_enabled(&set, i, i, &mut client))
+            .collect();
+        let apic = &mut apics[0];
+
+        let mut access = apic.access(&mut client);
+        assert_eq!(
+            access.msr_read(hvdef::HV_X64_MSR_APIC_FREQUENCY).unwrap(),
+            set.frequency()
+        );
+        assert!(
+            access
+                .msr_write(hvdef::HV_X64_MSR_APIC_FREQUENCY, 1)
+                .is_err()
+        );
+        access.msr_write(hvdef::HV_X64_MSR_TPR, 0x50).unwrap();
+        assert_eq!(access.msr_read(hvdef::HV_X64_MSR_TPR).unwrap(), 0x50);
+        assert!(access.msr_write(hvdef::HV_X64_MSR_TPR, 0x100).is_err());
+        assert!(access.msr_read(hvdef::HV_X64_MSR_EOI).is_err());
+        assert_eq!(client.cr8, 5);
+        client.cr8 = 0;
+
+        fixed_msi(&set, 0, 0x81, false);
+        fixed_msi(&set, 0, 0x41, false);
+        assert_eq!(pending(apic, &mut client), Some(0x81));
+        apic.acknowledge_interrupt(0x81);
+        assert_eq!(pending(apic, &mut client), None);
+        apic.access(&mut client)
+            .msr_write(hvdef::HV_X64_MSR_EOI, 0)
+            .unwrap();
+        assert!(!isr_bit_set(apic, &mut client, 0x81));
+        assert_eq!(pending(apic, &mut client), Some(0x41));
+
+        let icr = u64::from(ipi(0x90, DeliveryMode::FIXED).with_xapic_mda(1));
+        apic.access(&mut client)
+            .msr_write(hvdef::HV_X64_MSR_ICR, icr)
+            .unwrap();
+        assert_eq!(
+            apic.access(&mut client)
+                .msr_read(hvdef::HV_X64_MSR_ICR)
+                .unwrap(),
+            icr
+        );
+        assert_eq!(deliver(&mut apics, &mut client, 0x90), [1]);
+
+        apics[1]
+            .access(&mut client)
+            .msr_write(X86X_MSR_APIC_BASE, apic_base(false))
+            .unwrap();
+        let mut access = apics[1].access(&mut client);
+        assert!(access.msr_write(hvdef::HV_X64_MSR_EOI, 0).is_err());
+        assert!(access.msr_write(hvdef::HV_X64_MSR_ICR, icr).is_err());
+        assert!(access.msr_read(hvdef::HV_X64_MSR_ICR).is_err());
+
+        let set = LocalApicSet::builder().build();
+        let mut apic = add_enabled(&set, 0, 0, &mut client);
+        let mut access = apic.access(&mut client);
+        for msr in [
+            hvdef::HV_X64_MSR_APIC_FREQUENCY,
+            hvdef::HV_X64_MSR_EOI,
+            hvdef::HV_X64_MSR_ICR,
+            hvdef::HV_X64_MSR_TPR,
+        ] {
+            assert!(matches!(access.msr_read(msr), Err(MsrError::Unknown)));
+            assert!(matches!(access.msr_write(msr, 0), Err(MsrError::Unknown)));
+        }
+    }
+
+    #[test]
+    #[ignore = "known bug: DFR writes with an unknown model panic (unreachable!)"]
+    fn dfr_write_with_unknown_model_does_not_panic() {
+        // Test: a guest writes the DFR with a model value other than flat
+        // (0xF) or cluster (0x0), then keeps using the APIC.
+        // Expected: the write does not panic and the APIC keeps delivering
+        // interrupts.
+        // Known bug: `cluster_mode()` hits `unreachable!` for these values, so
+        // a single guest MMIO write crashes the VMM or paravisor. `restore()`
+        // with such a DFR panics the same way.
+        let set = LocalApicSet::builder().build();
+        let mut client = TestClient::default();
+        let mut apic = add_enabled(&set, 0, 0, &mut client);
+        write_reg(&mut apic, &mut client, ApicRegister::DFR, 0x5fff_ffff);
+        fixed_msi(&set, 0, TEST_VECTOR, false);
+        assert_eq!(pending(&mut apic, &mut client), Some(TEST_VECTOR));
+    }
+
+    // IGNORED: MMIO passes reserved TPR bits to CR8, and the x2APIC TPR MSR
+    // does not reject writes with reserved bits set. The Hyper-V TPR MSR
+    // already rejects values above 0xff. Re-enable this test together with
+    // the fixes by removing #[ignore].
+    //
+    // Test: A guest writes TPR with bits above bit 7 set, through xAPIC MMIO
+    //       and through the x2APIC TPR MSR.
+    // Expected: MMIO ignores reserved bits; the x2APIC MSR write faults
+    //       without changing CR8.
+    #[test]
+    #[ignore = "known bugs: MMIO passes reserved TPR bits to CR8; x2APIC accepts them"]
+    fn tpr_writes_handle_reserved_bits_by_mode() {
+        let set = LocalApicSet::builder().x2apic_capable(true).build();
+        let mut client = TestClient::default();
+        let mut apic = add_enabled(&set, 0, 0, &mut client);
+        write_reg(&mut apic, &mut client, ApicRegister::TPR, 0xffff_ff35);
+        assert_eq!(client.cr8, 3);
+        assert_eq!(read_reg(&mut apic, &mut client, ApicRegister::TPR), 0x30);
+
+        enter_x2apic(&mut apic, &mut client);
+        assert!(matches!(
+            apic.access(&mut client)
+                .msr_write(ApicRegister::TPR.x2apic_msr(), 0xffff_ff46),
+            Err(MsrError::InvalidAccess)
+        ));
+        assert_eq!(client.cr8, 3);
+    }
+
+    fn vectors(list: &[u8]) -> [u32; 8] {
+        let mut bits = [0; 8];
+        for &v in list {
+            bits[v as usize / 32] |= 1 << (v % 32);
+        }
+        bits
+    }
+
+    /// Asserts `vector` is the next interrupt and acknowledges it, as the
+    /// processor does when it injects the interrupt.
+    fn inject(apic: &mut LocalApic, client: &mut TestClient, vector: u8) {
+        assert_eq!(pending(apic, client), Some(vector));
+        apic.acknowledge_interrupt(vector);
+    }
+
+    fn eoi(apic: &mut LocalApic, client: &mut TestClient) {
+        write_reg(apic, client, ApicRegister::EOI, 0);
+    }
+
+    #[test]
+    fn offload_round_trip_preserves_interrupt_state() {
+        // Test: enable offload with one in-service level-triggered and one
+        // pending interrupt, let "hardware" deliver the pending one, read
+        // state back through a guest register read, then disable offload with
+        // a new interrupt pending on the offload page.
+        // Expected: each push hands over exactly the new IRR/ISR/TMR state,
+        // an unchanged APIC pushes nothing, offload-page state is visible to
+        // the guest, and after disabling every interrupt is delivered and
+        // completed in priority order with the level EOI forwarded.
+        let set = LocalApicSet::builder().build();
+        let mut client = TestClient::default();
+        let mut apic = add_enabled(&set, 0, 0, &mut client);
+        fixed_msi(&set, 0, 0x45, true);
+        inject(&mut apic, &mut client, 0x45);
+        fixed_msi(&set, 0, 0x61, false);
+        assert_eq!(pending(&mut apic, &mut client), Some(0x61));
+
+        apic.enable_offload();
+        assert!(apic.is_offloaded());
+        assert!(apic.can_offload_irr());
+        let mut pushed = None;
+        assert!(
+            apic.push_to_offload(|irr, isr, tmr| pushed = Some((*irr, *isr, *tmr)))
+                .is_ok()
+        );
+        assert_eq!(
+            pushed.take(),
+            Some((vectors(&[0x61]), vectors(&[0x45]), vectors(&[0x45])))
+        );
+        assert!(
+            apic.push_to_offload(|_, _, _| panic!("nothing changed"))
+                .is_ok()
+        );
+
+        client.offload_isr = vectors(&[0x45, 0x61]);
+        assert!(isr_bit_set(&mut apic, &mut client, 0x45));
+        assert!(isr_bit_set(&mut apic, &mut client, 0x61));
+        assert!(
+            apic.push_to_offload(|irr, isr, tmr| pushed = Some((*irr, *isr, *tmr)))
+                .is_ok()
+        );
+        assert_eq!(
+            pushed,
+            Some(([0; 8], vectors(&[0x45, 0x61]), vectors(&[0x45])))
+        );
+
+        apic.disable_offload(&vectors(&[0x70]), &vectors(&[0x45, 0x61]));
+        assert!(!apic.is_offloaded());
+        inject(&mut apic, &mut client, 0x70);
+        eoi(&mut apic, &mut client);
+        eoi(&mut apic, &mut client);
+        assert!(client.eois.is_empty());
+        eoi(&mut apic, &mut client);
+        assert_eq!(client.eois, [0x45]);
+        assert_eq!(pending(&mut apic, &mut client), None);
+    }
+
+    #[test]
+    fn offload_is_refused_when_unsafe() {
+        // Test: try to push to offload with an auto-EOI interrupt pending,
+        // and with the APIC software-disabled.
+        // Expected: the auto-EOI push is refused until that interrupt is
+        // delivered, and a software-disabled APIC neither pushes nor allows
+        // setting IRR bits directly in the offload page.
+        let set = LocalApicSet::builder().build();
+        let mut client = TestClient::default();
+        let mut apic = add_enabled(&set, 0, 0, &mut client);
+        set.synic_interrupt(VpIndex::new(0), 0x50, true, |_| {});
+        assert_eq!(pending(&mut apic, &mut client), Some(0x50));
+
+        apic.enable_offload();
+        assert!(
+            apic.push_to_offload(|_, _, _| panic!("pushed auto-EOI state"))
+                .is_err()
+        );
+        apic.disable_offload(&[0; 8], &[0; 8]);
+        inject(&mut apic, &mut client, 0x50);
+        apic.enable_offload();
+        assert!(apic.push_to_offload(|_, _, _| {}).is_ok());
+
+        write_reg(&mut apic, &mut client, ApicRegister::SVR, 0xff);
+        assert!(!apic.can_offload_irr());
+        assert!(
+            apic.push_to_offload(|_, _, _| panic!("pushed while disabled"))
+                .is_ok()
+        );
+    }
+
+    #[test]
+    fn lazy_eoi_allowed_only_when_unambiguous() {
+        // Test: check whether a lazy EOI is allowed for combinations of
+        // pending, in-service, edge, level, and offloaded interrupts.
+        // Expected: allowed only for a single edge-triggered interrupt that
+        // is either the only pending one or the only one in service.
+        fn lazy(setup: impl FnOnce(&LocalApicSet, &mut LocalApic, &mut TestClient)) -> bool {
+            let set = LocalApicSet::builder().build();
+            let mut client = TestClient::default();
+            let mut apic = add_enabled(&set, 0, 0, &mut client);
+            setup(&set, &mut apic, &mut client);
+            apic.is_lazy_eoi_pending()
+        }
+
+        assert!(!lazy(|_, _, _| {}), "nothing pending");
+        assert!(
+            lazy(|set, apic, client| {
+                fixed_msi(set, 0, 0x60, false);
+                pending(apic, client);
+            }),
+            "one pending edge"
+        );
+        assert!(
+            lazy(|set, apic, client| {
+                fixed_msi(set, 0, 0x60, false);
+                inject(apic, client, 0x60);
+            }),
+            "one in-service edge"
+        );
+        assert!(
+            !lazy(|set, apic, client| {
+                fixed_msi(set, 0, 0x40, false);
+                inject(apic, client, 0x40);
+                fixed_msi(set, 0, 0x60, false);
+                pending(apic, client);
+            }),
+            "higher pending over in-service"
+        );
+        assert!(
+            !lazy(|set, apic, client| {
+                fixed_msi(set, 0, 0x60, false);
+                inject(apic, client, 0x60);
+                fixed_msi(set, 0, 0x40, false);
+                pending(apic, client);
+            }),
+            "lower pending under in-service"
+        );
+        assert!(
+            !lazy(|set, apic, client| {
+                fixed_msi(set, 0, 0x60, false);
+                fixed_msi(set, 0, 0x40, false);
+                pending(apic, client);
+            }),
+            "two pending"
+        );
+        assert!(
+            !lazy(|set, apic, client| {
+                fixed_msi(set, 0, 0x60, true);
+                pending(apic, client);
+            }),
+            "pending level"
+        );
+        assert!(
+            !lazy(|set, apic, client| {
+                fixed_msi(set, 0, 0x60, true);
+                inject(apic, client, 0x60);
+            }),
+            "in-service level"
+        );
+        assert!(
+            !lazy(|set, apic, client| {
+                fixed_msi(set, 0, 0x60, false);
+                pending(apic, client);
+                apic.enable_offload();
+            }),
+            "offloaded"
+        );
+    }
+
+    #[test]
+    fn lazy_eoi_completes_the_in_service_interrupt() {
+        // Test: deliver an edge-triggered interrupt and complete it with a
+        // lazy EOI instead of an EOI register write.
+        // Expected: the interrupt leaves service without notifying the
+        // IO-APIC, and a later lower-priority interrupt is deliverable.
+        let set = LocalApicSet::builder().build();
+        let mut client = TestClient::default();
+        let mut apic = add_enabled(&set, 0, 0, &mut client);
+        fixed_msi(&set, 0, 0x60, false);
+        inject(&mut apic, &mut client, 0x60);
+        assert!(apic.is_lazy_eoi_pending());
+
+        apic.access(&mut client).lazy_eoi();
+        assert!(!isr_bit_set(&mut apic, &mut client, 0x60));
+        assert!(client.eois.is_empty());
+        fixed_msi(&set, 0, 0x50, false);
+        assert_eq!(pending(&mut apic, &mut client), Some(0x50));
+    }
+
+    #[test]
+    fn local_fixed_interrupt_fast_path() {
+        // Test: request interrupts through the local fast path, including a
+        // reserved vector and a vector last delivered as level-triggered, and
+        // while the APIC is software- or hardware-disabled.
+        // Expected: valid vectors become pending as edge-triggered (no IO-APIC
+        // EOI), reserved vectors are ignored, and nothing is queued while the
+        // APIC is disabled.
+        let set = LocalApicSet::builder().build();
+        let mut client = TestClient::default();
+        let mut apic = add_enabled(&set, 0, 0, &mut client);
+        fixed_msi(&set, 0, 0x61, true);
+        inject(&mut apic, &mut client, 0x61);
+        eoi(&mut apic, &mut client);
+        assert_eq!(client.eois, [0x61]);
+        assert!(tmr_bit_set(&mut apic, &mut client, 0x61));
+
+        apic.request_fixed_interrupts(vectors(&[5, 20, 0x61]));
+        assert!(!tmr_bit_set(&mut apic, &mut client, 0x61));
+        inject(&mut apic, &mut client, 0x61);
+        eoi(&mut apic, &mut client);
+        assert_eq!(client.eois, [0x61]);
+        inject(&mut apic, &mut client, 20);
+        eoi(&mut apic, &mut client);
+        assert_eq!(pending(&mut apic, &mut client), None);
+
+        write_reg(&mut apic, &mut client, ApicRegister::SVR, 0xff);
+        apic.request_fixed_interrupts(vectors(&[0x70]));
+        software_enable(&mut apic, &mut client);
+        assert_eq!(pending(&mut apic, &mut client), None);
+
+        apic.access(&mut client)
+            .msr_write(X86X_MSR_APIC_BASE, apic_base(false))
+            .unwrap();
+        apic.request_fixed_interrupts(vectors(&[0x71]));
+        apic.access(&mut client)
+            .msr_write(X86X_MSR_APIC_BASE, apic_base(true))
+            .unwrap();
+        software_enable(&mut apic, &mut client);
+        assert_eq!(pending(&mut apic, &mut client), None);
+    }
+
+    #[test]
+    fn logical_and_msi_broadcasts_reach_all_apics() {
+        // Test: logical-destination MSIs, physical broadcast MSIs, an xAPIC
+        // cluster-mode logical broadcast IPI, and an x2APIC logical broadcast
+        // IPI.
+        // Expected: the logical MSI reaches the APICs whose logical IDs match,
+        // and every broadcast reaches every APIC, including the sender.
+        let set = LocalApicSet::builder().build();
+        let mut client = TestClient::default();
+        let mut apics: Vec<_> = (0..3)
+            .map(|i| add_enabled(&set, i, i, &mut client))
+            .collect();
+        for (apic, ldr) in apics.iter_mut().zip([0x01, 0x02, 0x04]) {
+            write_reg(apic, &mut client, ApicRegister::LDR, ldr << 24);
+        }
+        assert_eq!(
+            msi(&set, 0x05, true, 0x60, DeliveryMode::FIXED, false),
+            [0, 2]
+        );
+        assert_eq!(deliver(&mut apics, &mut client, 0x60), [0, 2]);
+        msi(&set, 0xff, false, 0x61, DeliveryMode::FIXED, false);
+        assert_eq!(deliver(&mut apics, &mut client, 0x61), [0, 1, 2]);
+
+        for apic in &mut apics {
+            write_reg(apic, &mut client, ApicRegister::DFR, 0x0fff_ffff);
+        }
+        send_xapic_ipi(
+            &mut apics[0],
+            &mut client,
+            ipi(0x62, DeliveryMode::FIXED)
+                .with_destination_mode_logical(true)
+                .with_xapic_mda(0xff),
+        );
+        assert_eq!(deliver(&mut apics, &mut client, 0x62), [0, 1, 2]);
+
+        let set = LocalApicSet::builder().x2apic_capable(true).build();
+        let mut apics: Vec<_> = (0..2)
+            .map(|i| {
+                let mut apic = add_enabled(&set, i, i, &mut client);
+                enter_x2apic(&mut apic, &mut client);
+                apic
+            })
+            .collect();
+        send_x2apic_ipi(
+            &mut apics[0],
+            &mut client,
+            ipi(0x63, DeliveryMode::FIXED)
+                .with_destination_mode_logical(true)
+                .with_x2apic_mda(!0),
+        );
+        assert_eq!(deliver(&mut apics, &mut client, 0x63), [0, 1]);
+    }
+
+    #[test]
+    fn interrupt_delivery_edge_cases() {
+        // Test: lowest-priority logical IPIs with all targets enabled and
+        // with the first target software-disabled, SMI and remote-read IPIs,
+        // a level-triggered LINT pulse, and synic interrupts with and without
+        // auto-EOI.
+        // Expected: lowest priority picks the first software-enabled target,
+        // unsupported IPI modes and level LINT pulses are dropped, and an
+        // auto-EOI interrupt never enters service.
+        let set = LocalApicSet::builder().build();
+        let mut client = TestClient::default();
+        let mut apics: Vec<_> = (0..3)
+            .map(|i| add_enabled(&set, i, i, &mut client))
+            .collect();
+        write_reg(&mut apics[1], &mut client, ApicRegister::LDR, 0x02 << 24);
+        write_reg(&mut apics[2], &mut client, ApicRegister::LDR, 0x04 << 24);
+        let lowest = |vector| {
+            ipi(vector, DeliveryMode::LOWEST_PRIORITY)
+                .with_destination_mode_logical(true)
+                .with_xapic_mda(0x06)
+        };
+        send_xapic_ipi(&mut apics[0], &mut client, lowest(0x58));
+        assert_eq!(deliver(&mut apics, &mut client, 0x58), [1]);
+        write_reg(&mut apics[1], &mut client, ApicRegister::SVR, 0xff);
+        send_xapic_ipi(&mut apics[0], &mut client, lowest(0x59));
+        assert_eq!(deliver(&mut apics, &mut client, 0x59), [2]);
+
+        client.wakes.clear();
+        for mode in [DeliveryMode::SMI, DeliveryMode::REMOTE_READ] {
+            send_xapic_ipi(
+                &mut apics[0],
+                &mut client,
+                ipi(0x5a, mode).with_xapic_mda(2),
+            );
+        }
+        assert!(client.wakes.is_empty());
+        let work = apics[2].flush();
+        assert!(!work.nmi && !work.init && !work.extint && work.sipi.is_none());
+        assert_eq!(pending(&mut apics[2], &mut client), None);
+
+        write_reg(
+            &mut apics[2],
+            &mut client,
+            ApicRegister::LVT_LINT0,
+            0x5b | (1 << 15),
+        );
+        set.lint(VpIndex::new(2), 0, |_| panic!("level lint woke a VP"));
+        assert_eq!(pending(&mut apics[2], &mut client), None);
+
+        set.synic_interrupt(VpIndex::new(2), 0x5c, true, |_| {});
+        inject(&mut apics[2], &mut client, 0x5c);
+        assert!(!isr_bit_set(&mut apics[2], &mut client, 0x5c));
+        assert_eq!(read_reg(&mut apics[2], &mut client, ApicRegister::PPR), 0);
+        set.synic_interrupt(VpIndex::new(2), 0x5d, false, |_| {});
+        inject(&mut apics[2], &mut client, 0x5d);
+        assert!(isr_bit_set(&mut apics[2], &mut client, 0x5d));
+    }
+
+    #[pal_async::async_test]
+    async fn scan_reports_work_and_new_interrupts(driver: pal_async::DefaultDriver) {
+        // Test: scan a disabled APIC, then an enabled one with INIT/NMI work,
+        // an external MSI, a self-IPI, an armed timer, and offload enabled.
+        // Expected: a disabled APIC reports nothing; work is reported once;
+        // external interrupts are collected only when the caller asks to scan
+        // IRR, while self-IPIs are always collected; the timer deadline is
+        // handed to the VM time source; offload suppresses interrupt reports.
+        let keeper = vmcore::vmtime::VmTimeKeeper::new(&driver, VmTime::from_100ns(0));
+        let mut vmtime = keeper
+            .builder()
+            .build(&driver)
+            .await
+            .unwrap()
+            .access("apic");
+        let set = LocalApicSet::builder().build();
+        let mut client = TestClient::default();
+        let mut sender = add_enabled(&set, 0, 0, &mut client);
+        let mut target = add_enabled(&set, 1, 1, &mut client);
+
+        target
+            .access(&mut client)
+            .msr_write(X86X_MSR_APIC_BASE, apic_base(false))
+            .unwrap();
+        let work = target.scan(&mut vmtime, true);
+        assert!(!work.nmi && !work.init && work.interrupt.is_none());
+        target
+            .access(&mut client)
+            .msr_write(X86X_MSR_APIC_BASE, apic_base(true))
+            .unwrap();
+        software_enable(&mut target, &mut client);
+
+        for mode in [DeliveryMode::INIT, DeliveryMode::NMI] {
+            send_xapic_ipi(&mut sender, &mut client, ipi(0, mode).with_xapic_mda(1));
+        }
+        fixed_msi(&set, 1, 0x60, false);
+        let work = target.scan(&mut vmtime, false);
+        assert!(work.init && work.nmi);
+        assert_eq!(work.interrupt, None);
+        let work = target.scan(&mut vmtime, true);
+        assert!(!work.init && !work.nmi);
+        assert_eq!(work.interrupt, Some(0x60));
+
+        send_xapic_ipi(
+            &mut target,
+            &mut client,
+            ipi(0x70, DeliveryMode::FIXED).with_destination_shorthand(DestinationShorthand::SELF.0),
+        );
+        assert_eq!(target.scan(&mut vmtime, false).interrupt, Some(0x70));
+
+        write_reg(&mut target, &mut client, ApicRegister::LVT_TIMER, 0x40);
+        write_reg(&mut target, &mut client, ApicRegister::TIMER_ICR, 1000);
+        target.scan(&mut vmtime, false);
+        // 1000 counts at the default divide-by-2 is 2000 ticks of 5ns.
+        assert_eq!(vmtime.get_timeout(), Some(VmTime::from_100ns(100)));
+
+        target.enable_offload();
+        fixed_msi(&set, 1, 0x80, false);
+        assert_eq!(target.scan(&mut vmtime, true).interrupt, None);
     }
 }

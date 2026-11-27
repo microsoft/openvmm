@@ -146,3 +146,120 @@ impl CpuidLeafSet {
         result
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use test_with_tracing::test;
+
+    const DEFAULT: [u32; 4] = [0x1111_1111, 0x2222_2222, 0x3333_3333, 0x4444_4444];
+
+    // Test: Look up a leaf that has no entry in the set.
+    // Expected: The caller's default result is returned unchanged.
+    #[test]
+    fn missing_leaf_returns_default() {
+        let set = CpuidLeafSet::new(vec![CpuidLeaf::new(1, [1, 2, 3, 4])]);
+
+        assert_eq!(set.result(2, 0, &DEFAULT), DEFAULT);
+    }
+
+    // Test: Look up a leaf whose entry masks ECX bit 20 (set in the default)
+    //       and bit 22 (clear in the default), with the entry clearing bit 20
+    //       and setting every other bit.
+    // Expected: Bit 20 is cleared and bit 22 is set; all other bits come from
+    //       the default.
+    #[test]
+    fn masked_leaf_overrides_only_masked_bits() {
+        let set = CpuidLeafSet::new(vec![CpuidLeaf::new(1, [0, 0, !(1 << 20), 0]).masked([
+            0,
+            0,
+            1 << 20 | 1 << 22,
+            0,
+        ])]);
+
+        let result = set.result(1, 0, &DEFAULT);
+
+        assert_eq!(result, [DEFAULT[0], DEFAULT[1], 0x3363_3333, DEFAULT[3]]);
+    }
+
+    // Test: Merge two entries for the same leaf and subleaf, where the later
+    //       entry overlaps some of the earlier entry's bits.
+    // Expected: Each entry's masked bits come from that entry, with the later
+    //       entry winning where they overlap; bits in neither mask come
+    //       from the default.
+    #[test]
+    fn later_leaf_overrides_earlier_leaf_within_its_mask() {
+        let set = CpuidLeafSet::new(vec![
+            CpuidLeaf::new(7, [0xaaaa_0000, 0, 0, 0]).masked([0xffff_0000, 0, 0, 0]),
+            CpuidLeaf::new(7, [0x00bb_00cc, 0, 0, 0]).masked([0x00ff_00ff, 0, 0, 0]),
+        ]);
+
+        assert_eq!(
+            set.result(7, 0, &[0x1234_5678, 0, 0, 0])[0],
+            0xaabb_56cc,
+            "later entry must win only within its mask"
+        );
+    }
+
+    // Test: Look up different subleaves of a leaf that has subleaf-specific
+    //       entries.
+    // Expected: Each entry applies only to its own subleaf; other subleaves
+    //       return the default.
+    #[test]
+    fn indexed_leaf_matches_only_its_subleaf() {
+        let set = CpuidLeafSet::new(vec![
+            CpuidLeaf::new(0xb, [1, 1, 1, 1]).indexed(0),
+            CpuidLeaf::new(0xb, [2, 2, 2, 2]).indexed(1),
+        ]);
+
+        assert_eq!(set.result(0xb, 0, &DEFAULT), [1, 1, 1, 1]);
+        assert_eq!(set.result(0xb, 1, &DEFAULT), [2, 2, 2, 2]);
+        assert_eq!(set.result(0xb, 2, &DEFAULT), DEFAULT);
+    }
+
+    // Test: Look up a leaf whose entry accepts any subleaf.
+    // Expected: The entry applies to every subleaf of that leaf.
+    #[test]
+    fn unindexed_leaf_matches_every_subleaf() {
+        let set = CpuidLeafSet::new(vec![CpuidLeaf::new(1, [5, 6, 7, 8])]);
+
+        for ecx in [0, 1, 0xffff_ffff] {
+            assert_eq!(
+                set.result(1, ecx, &DEFAULT),
+                [5, 6, 7, 8],
+                "subleaf {ecx:#x}"
+            );
+        }
+    }
+
+    // Test: Build a set from two entries for leaf 7 subleaf 0 (merged) and an
+    //       unmasked entry for leaf 1, then list and consume its leaves.
+    // Expected: Both APIs return the merged values, masks, and subleaf indices.
+    #[test]
+    fn leaf_set_lists_merged_leaves_and_masks() {
+        let set = CpuidLeafSet::new(vec![
+            CpuidLeaf::new(7, [0xa, 0, 0, 0])
+                .indexed(0)
+                .masked([0xf, 0, 0, 0]),
+            CpuidLeaf::new(1, [0x906ea, 0, 0, 0]),
+            CpuidLeaf::new(7, [0xb0, 0, 0, 0])
+                .indexed(0)
+                .masked([0xf0, 0, 0, 0]),
+        ]);
+
+        let expected = [
+            (1, None, [0x906ea, 0, 0, 0], [!0; 4]),
+            (7, Some(0), [0xba, 0, 0, 0], [0xff, 0, 0, 0]),
+        ];
+        let leaf_state = |leaf: &CpuidLeaf| (leaf.function, leaf.index, leaf.result, leaf.mask);
+        assert_eq!(
+            set.leaves().iter().map(leaf_state).collect::<Vec<_>>(),
+            expected
+        );
+        assert_eq!(set.result(7, 0, &[0; 4])[0], 0xba);
+        assert_eq!(
+            set.into_leaves().iter().map(leaf_state).collect::<Vec<_>>(),
+            expected
+        );
+    }
+}

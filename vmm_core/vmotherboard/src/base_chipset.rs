@@ -1241,3 +1241,629 @@ pub mod options {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::BaseChipsetBuilder;
+    use super::BaseChipsetBuilderError;
+    use super::BaseChipsetBuilderOutput;
+    use super::options::BaseChipsetDevices;
+    use super::options::BaseChipsetFoundation;
+    use super::options::BaseChipsetManifest;
+    use super::options::dev;
+    use crate::BusIdPci;
+    use crate::ChipsetDeviceHandle;
+    use crate::DebugEventHandler;
+    use crate::LegacyPciChipsetDeviceHandle;
+    use crate::PowerEvent;
+    use crate::PowerEventHandler;
+    use crate::chipset::Chipset;
+    use crate::chipset::tests::Fixture;
+    use crate::chipset::tests::Pci;
+    use crate::chipset::tests::Shared;
+    use crate::chipset::tests::TestDevice;
+    use crate::chipset::tests::access;
+    use chipset_device::ChipsetDevice;
+    use chipset_device_resources::BSP_LINT_LINE_SET;
+    use chipset_device_resources::IRQ_LINE_SET;
+    use closeable_mutex::CloseableMutex;
+    use guestmem::GuestMemory;
+    use pal_async::DefaultDriver;
+    use pal_async::async_test;
+    use parking_lot::Mutex;
+    use std::sync::Arc;
+    use test_with_tracing::test;
+    use vm_resource::IntoResource;
+    use vm_resource::ResourceResolver;
+    use vmcore::line_interrupt::LineSetTarget;
+
+    struct PanicOnDebugBreak;
+
+    impl DebugEventHandler for PanicOnDebugBreak {
+        fn on_debug_break(&self, _: Option<u32>) {
+            panic!("unexpected debug break");
+        }
+    }
+
+    #[derive(Default)]
+    struct RecordPower(Mutex<Vec<&'static str>>);
+
+    impl PowerEventHandler for RecordPower {
+        fn on_power_event(&self, evt: PowerEvent) {
+            self.0.lock().push(match evt {
+                PowerEvent::PowerOff => "power-off",
+                PowerEvent::Reset => "reset",
+                PowerEvent::Hibernate => "hibernate",
+            });
+        }
+    }
+
+    #[derive(Default)]
+    struct RecordLines(Mutex<Vec<(u32, bool)>>);
+
+    impl LineSetTarget for RecordLines {
+        fn set_irq(&self, vector: u32, high: bool) {
+            self.0.lock().push((vector, high));
+        }
+    }
+
+    async fn base_chipset<'a>(
+        fixture: &'a Fixture,
+        power: &Arc<RecordPower>,
+        devices: BaseChipsetDevices,
+        resolver: &ResourceResolver,
+        configure: impl FnOnce(BaseChipsetBuilder<'a>) -> BaseChipsetBuilder<'a>,
+    ) -> Result<BaseChipsetBuilderOutput<'a>, BaseChipsetBuilderError> {
+        let foundation = BaseChipsetFoundation {
+            is_restoring: false,
+            untrusted_dma_memory: GuestMemory::empty(),
+            trusted_vtl0_dma_memory: GuestMemory::empty(),
+            power_event_handler: power.clone(),
+            debug_event_handler: Arc::new(PanicOnDebugBreak),
+            vmtime: &fixture.time,
+            vmtime_unit: fixture.time_unit.handle(),
+            doorbell_registration: None,
+        };
+        configure(BaseChipsetBuilder::new(foundation, devices))
+            .build(&fixture.source, &fixture.units, resolver)
+            .await
+    }
+
+    fn generic_pci_bus() -> BaseChipsetDevices {
+        BaseChipsetDevices {
+            deps_generic_pci_bus: Some(dev::GenericPciBusDeps {
+                bus_id: BusIdPci::new("pci0"),
+                pio_addr: 0xcf8,
+                pio_data: 0xcfc,
+            }),
+            ..BaseChipsetDevices::empty()
+        }
+    }
+
+    fn cfg_address(bdf: (u8, u8, u8), offset: u8) -> [u8; 4] {
+        let (bus, device, function) = bdf;
+        (0x8000_0000
+            | (u32::from(bus) << 16)
+            | (u32::from(device) << 11)
+            | (u32::from(function) << 8)
+            | u32::from(offset))
+        .to_le_bytes()
+    }
+
+    async fn cfg_read(chipset: &Chipset, bdf: (u8, u8, u8), offset: u8) -> u32 {
+        chipset.io_write(0, 0xcf8, &cfg_address(bdf, offset)).await;
+        let mut data = [0; 4];
+        chipset.io_read(0, 0xcfc, &mut data).await;
+        u32::from_le_bytes(data)
+    }
+
+    async fn cfg_write(chipset: &Chipset, bdf: (u8, u8, u8), offset: u8, value: u32) {
+        chipset.io_write(0, 0xcf8, &cfg_address(bdf, offset)).await;
+        chipset.io_write(0, 0xcfc, &value.to_le_bytes()).await;
+    }
+
+    async fn port_read(chipset: &Chipset, port: u16) -> u8 {
+        let mut data = [0];
+        chipset.io_read(0, port, &mut data).await;
+        data[0]
+    }
+
+    async fn port_write(chipset: &Chipset, port: u16, value: u8) {
+        chipset.io_write(0, port, &[value]).await;
+    }
+
+    // Test: A base chipset with a generic PCI bus at 0xcf8/0xcfc, a PCI device
+    //       at 00:03.0, and one that suggests 00:03.0 but is placed at 00:05.0,
+    //       accessed through the config address/data ports; then two devices at
+    //       the same address.
+    // Expected: Each address returns its device's data, an empty slot reads all
+    //       ones, writes reach the device, the manifest check passes, and the
+    //       duplicate address makes build fail naming both devices.
+    #[async_test]
+    async fn generic_pci_bus_routes_config_space(driver: DefaultDriver) {
+        let fixture = Fixture::new(&driver).await;
+        let power = Arc::new(RecordPower::default());
+        let shared = Arc::new(Mutex::new(Shared::default()));
+        let resolver = ResourceResolver::new();
+        let pci_device = |name, fill| TestDevice {
+            pci: Pci::SuggestedBdf(0, 3, 0),
+            read_fill: fill,
+            ..TestDevice::new(name, &shared)
+        };
+
+        {
+            let output = base_chipset(&fixture, &power, generic_pci_bus(), &resolver, |b| {
+                b.with_expected_manifest(BaseChipsetManifest {
+                    with_generic_pci_bus: true,
+                    ..BaseChipsetManifest::empty()
+                })
+            })
+            .await
+            .unwrap();
+            let builder = output.chipset_builder;
+            builder
+                .arc_mutex_device("nic")
+                .on_pci_bus(BusIdPci::new("pci0"))
+                .add(|_| pci_device("nic", 0x5a))
+                .unwrap();
+            // Suggests 00:03.0 too, but the explicit address wins.
+            builder
+                .arc_mutex_device("moved")
+                .on_pci_bus(BusIdPci::new("pci0"))
+                .with_pci_addr(0, 5, 0)
+                .add(|_| pci_device("moved", 0x6b))
+                .unwrap();
+            let (chipset, _devices) = builder.build().unwrap();
+
+            assert_eq!(cfg_read(&chipset, (0, 3, 0), 0).await, 0x5a5a_5a5a);
+            assert_eq!(cfg_read(&chipset, (0, 5, 0), 0).await, 0x6b6b_6b6b);
+            assert_eq!(cfg_read(&chipset, (0, 4, 0), 0).await, !0);
+            cfg_write(&chipset, (0, 3, 0), 0x10, 0xfebf_0000).await;
+            assert_eq!(
+                shared.lock().accesses,
+                [access("nic", "pci", 0x10, &0xfebf_0000u32.to_le_bytes())]
+            );
+        }
+
+        let output = base_chipset(&fixture, &power, generic_pci_bus(), &resolver, |b| b)
+            .await
+            .unwrap();
+        let builder = output.chipset_builder;
+        for name in ["first", "second"] {
+            builder
+                .arc_mutex_device(name)
+                .on_pci_bus(BusIdPci::new("pci0"))
+                .add(|_| pci_device(name, 0))
+                .unwrap();
+        }
+        let err = match builder.build() {
+            Ok(_) => panic!("build unexpectedly succeeded"),
+            Err(err) => format!("{:#}", anyhow::Error::from(err)),
+        };
+        assert!(
+            err.contains("cannot attach second to 00:03:0, already occupied by first"),
+            "{err}"
+        );
+    }
+
+    // Test: A Gen1 base chipset with the PIIX4 PCI bus, the Hyper-V IDE
+    //       controller, and the PIIX4 USB UHCI stub added as a legacy PCI
+    //       device handle at 00:07.2; guest writes to the PIIX4 reset register
+    //       at 0xcf9; then two handles at the same address.
+    // Expected: IDE answers at 00:07.1 with the PIIX4 IDE IDs, the stub answers
+    //       at 00:07.2 with its documented register values, only writes with a
+    //       reset bit set raise a reset power event, and the duplicate address
+    //       fails the build.
+    #[async_test]
+    async fn gen1_piix4_pci_bus_resets_and_hosts_legacy_pci_devices(driver: DefaultDriver) {
+        let fixture = Fixture::new(&driver).await;
+        let power = Arc::new(RecordPower::default());
+        let mut resolver = ResourceResolver::new();
+        resolver.add_resolver(chipset_legacy::piix4_uhci::resolver::Piix4PciUsbUhciStubResolver);
+        let devices = || BaseChipsetDevices {
+            deps_piix4_pci_bus: Some(dev::Piix4PciBusDeps {
+                bus_id: BusIdPci::new("piix4"),
+            }),
+            deps_hyperv_ide: Some(dev::HyperVIdeDeps {
+                attached_to: BusIdPci::new("piix4"),
+                primary_channel_drives: [None, None],
+                secondary_channel_drives: [None, None],
+            }),
+            ..BaseChipsetDevices::empty()
+        };
+        let uhci = |name: &str| LegacyPciChipsetDeviceHandle {
+            name: name.into(),
+            resource: chipset_resources::piix4_uhci::Piix4PciUsbUhciStubDeviceHandle
+                .into_resource(),
+            pci_bus_name: "piix4".into(),
+            bdf: (0, 7, 2),
+        };
+
+        {
+            let output = base_chipset(&fixture, &power, devices(), &resolver, |b| {
+                b.with_pci_device_handles(vec![uhci("uhci")])
+            })
+            .await
+            .unwrap();
+            let (chipset, _devices) = output.chipset_builder.build().unwrap();
+
+            assert_eq!(cfg_read(&chipset, (0, 7, 1), 0).await, 0x7111_8086);
+            // Status/command, and interrupt pin D with no line assigned.
+            assert_eq!(cfg_read(&chipset, (0, 7, 2), 0x04).await, 0x0280_0000);
+            assert_eq!(cfg_read(&chipset, (0, 7, 2), 0x3c).await, 0x04ff);
+            assert_eq!(cfg_read(&chipset, (0, 7, 3), 0x04).await, !0);
+
+            port_write(&chipset, 0xcf9, 0x01).await;
+            assert!(power.0.lock().is_empty());
+            port_write(&chipset, 0xcf9, 0x06).await;
+            assert_eq!(*power.0.lock(), ["reset"]);
+        }
+
+        let output = base_chipset(&fixture, &power, devices(), &resolver, |b| {
+            b.with_pci_device_handles(vec![uhci("uhci"), uhci("uhci2")])
+        })
+        .await
+        .unwrap();
+        let err = match output.chipset_builder.build() {
+            Ok(_) => panic!("build unexpectedly succeeded"),
+            Err(err) => format!("{:#}", anyhow::Error::from(err)),
+        };
+        assert!(
+            err.contains("cannot attach uhci2 to 00:07:2, already occupied by uhci"),
+            "{err}"
+        );
+    }
+
+    // Test: A base chipset configured with a fallback MMIO device and tracing
+    //       options, accessed at an unclaimed MMIO address and an unclaimed
+    //       port.
+    // Expected: The MMIO access reaches the fallback device, and the port
+    //       access still reads all ones.
+    #[async_test]
+    async fn base_chipset_forwards_unclaimed_mmio_to_fallback(driver: DefaultDriver) {
+        let fixture = Fixture::new(&driver).await;
+        let power = Arc::new(RecordPower::default());
+        let shared = Arc::new(Mutex::new(Shared::default()));
+        let fallback: Arc<CloseableMutex<dyn ChipsetDevice>> =
+            Arc::new(CloseableMutex::new(TestDevice {
+                read_fill: 0xfb,
+                ..TestDevice::new("fallback", &shared)
+            }));
+        let output = base_chipset(
+            &fixture,
+            &power,
+            BaseChipsetDevices::empty(),
+            &ResourceResolver::new(),
+            |b| {
+                b.with_fallback_mmio_device(Some(fallback))
+                    .with_trace_unknown_mmio(false)
+                    .with_trace_unknown_pio(true)
+            },
+        )
+        .await
+        .unwrap();
+        let (chipset, _devices) = output.chipset_builder.build().unwrap();
+
+        let mut data = [0; 4];
+        chipset.mmio_read(0, 0x8000, &mut data).await;
+        assert_eq!(data, [0xfb; 4]);
+        assert_eq!(port_read(&chipset, 0x80).await, !0);
+        assert_eq!(
+            shared.lock().accesses,
+            [access("fallback", "mmio", 0x8000, &[])]
+        );
+    }
+
+    fn rtc_time_source() -> vm_resource::Resource<chipset_resources::CmosRtcTimeSourceHandleKind> {
+        chipset_resources::cmos_rtc_time_source::SystemTimeClockHandle {
+            delta_milliseconds: 0,
+        }
+        .into_resource()
+    }
+
+    fn rtc_resolver() -> ResourceResolver {
+        let mut resolver = ResourceResolver::new();
+        resolver.add_resolver(chipset_resources::cmos_rtc_time_source::SystemTimeClockResolver);
+        resolver
+    }
+
+    /// Initial CMOS contents with a marker byte in general-purpose RAM.
+    const CMOS_MARKER: u8 = 0xab;
+
+    fn initial_cmos() -> [u8; 256] {
+        let mut cmos = [0; 256];
+        cmos[0x40] = CMOS_MARKER;
+        cmos
+    }
+
+    /// Checks that CMOS RAM starts with `initial_cmos()` and keeps a write,
+    /// using the index/data ports at 0x70/0x71.
+    async fn assert_cmos_ram_works(chipset: &Chipset) {
+        port_write(chipset, 0x70, 0x40).await;
+        assert_eq!(port_read(chipset, 0x71).await, CMOS_MARKER);
+        port_write(chipset, 0x70, 0x41).await;
+        port_write(chipset, 0x71, 0x5c).await;
+        port_write(chipset, 0x70, 0x41).await;
+        assert_eq!(port_read(chipset, 0x71).await, 0x5c);
+    }
+
+    // Test: Build the generic CMOS RTC with initial CMOS contents, read and
+    //       write CMOS RAM through ports 0x70/0x71, then build it without a
+    //       time source resolver.
+    // Expected: CMOS RAM starts with the supplied contents and keeps guest
+    //       writes; a missing time source fails the build.
+    #[async_test]
+    async fn generic_cmos_rtc_exposes_cmos_ram(driver: DefaultDriver) {
+        let fixture = Fixture::new(&driver).await;
+        let power = Arc::new(RecordPower::default());
+        let devices = || BaseChipsetDevices {
+            deps_generic_cmos_rtc: Some(dev::GenericCmosRtcDeps {
+                irq: 8,
+                time_source: rtc_time_source(),
+                century_reg_idx: 0x32,
+                initial_cmos: Some(initial_cmos()),
+            }),
+            ..BaseChipsetDevices::empty()
+        };
+
+        {
+            let output = base_chipset(&fixture, &power, devices(), &rtc_resolver(), |b| b)
+                .await
+                .unwrap();
+            let (chipset, _devices) = output.chipset_builder.build().unwrap();
+            assert_cmos_ram_works(&chipset).await;
+        }
+
+        let err = base_chipset(&fixture, &power, devices(), &ResourceResolver::new(), |b| b)
+            .await
+            .err()
+            .unwrap();
+        assert!(
+            matches!(err, BaseChipsetBuilderError::ResolveResource(_)),
+            "{err}"
+        );
+    }
+
+    // Test: Build the Gen1 (PIIX4) CMOS RTC with initial CMOS contents, read
+    //       and write CMOS RAM through ports 0x70/0x71, then build it without a
+    //       time source resolver.
+    // Expected: CMOS RAM starts with the supplied contents and keeps guest
+    //       writes; a missing time source fails the build.
+    #[async_test]
+    async fn gen1_piix4_cmos_rtc_exposes_cmos_ram(driver: DefaultDriver) {
+        let fixture = Fixture::new(&driver).await;
+        let power = Arc::new(RecordPower::default());
+        let devices = || BaseChipsetDevices {
+            deps_piix4_cmos_rtc: Some(dev::Piix4CmosRtcDeps {
+                time_source: rtc_time_source(),
+                initial_cmos: Some(initial_cmos()),
+                enlightened_interrupts: false,
+            }),
+            ..BaseChipsetDevices::empty()
+        };
+
+        {
+            let output = base_chipset(&fixture, &power, devices(), &rtc_resolver(), |b| b)
+                .await
+                .unwrap();
+            let (chipset, _devices) = output.chipset_builder.build().unwrap();
+            assert_cmos_ram_works(&chipset).await;
+        }
+
+        let err = base_chipset(&fixture, &power, devices(), &ResourceResolver::new(), |b| b)
+            .await
+            .err()
+            .unwrap();
+        assert!(
+            matches!(err, BaseChipsetBuilderError::ResolveResource(_)),
+            "{err}"
+        );
+    }
+
+    // Test: Build a Gen1 base chipset with an ISA DMA controller handle,
+    //       program channel 2's address and page registers through their ports,
+    //       and build again without a DMA resolver.
+    // Expected: The registers read back what the guest wrote, and the missing
+    //       resolver fails the build with the ISA DMA error.
+    #[async_test]
+    async fn gen1_isa_dma_controller_is_resolved_and_programmable(driver: DefaultDriver) {
+        let fixture = Fixture::new(&driver).await;
+        let power = Arc::new(RecordPower::default());
+        let mut resolver = ResourceResolver::new();
+        resolver.add_resolver(chipset::dma::resolver::GenericIsaDmaResolver);
+        let dma = || Some(chipset_resources::isa_dma::GenericIsaDmaDeviceHandle.into_resource());
+
+        {
+            let output = base_chipset(
+                &fixture,
+                &power,
+                BaseChipsetDevices::empty(),
+                &resolver,
+                |b| b.with_isa_dma_handle(dma()),
+            )
+            .await
+            .unwrap();
+            let (chipset, _devices) = output.chipset_builder.build().unwrap();
+
+            // Clear the byte flip-flop, write the 16-bit address low then high.
+            port_write(&chipset, 0x0c, 0).await;
+            port_write(&chipset, 0x04, 0x34).await;
+            port_write(&chipset, 0x04, 0x12).await;
+            port_write(&chipset, 0x0c, 0).await;
+            assert_eq!(port_read(&chipset, 0x04).await, 0x34);
+            assert_eq!(port_read(&chipset, 0x04).await, 0x12);
+            port_write(&chipset, 0x81, 0x05).await;
+            assert_eq!(port_read(&chipset, 0x81).await, 0x05);
+        }
+
+        let err = base_chipset(
+            &fixture,
+            &power,
+            BaseChipsetDevices::empty(),
+            &ResourceResolver::new(),
+            |b| b.with_isa_dma_handle(dma()),
+        )
+        .await
+        .err()
+        .unwrap();
+        assert!(
+            matches!(err, BaseChipsetBuilderError::ResolveIsaDma(_)),
+            "{err}"
+        );
+    }
+
+    // Test: Build each Gen1 floppy controller variant (generic ISA, full
+    //       Winbond super I/O, stub Winbond super I/O) with and without an ISA
+    //       DMA controller.
+    // Expected: Each builds when DMA is available and fails with
+    //       `NoDmaForFloppy` otherwise.
+    #[cfg(any(
+        feature = "dev_generic_isa_floppy",
+        feature = "dev_winbond_super_io_and_floppy_full",
+        feature = "dev_winbond_super_io_and_floppy_stub"
+    ))]
+    #[async_test]
+    async fn gen1_floppy_controllers_require_isa_dma(driver: DefaultDriver) {
+        let fixture = Fixture::new(&driver).await;
+        let power = Arc::new(RecordPower::default());
+        let mut resolver = ResourceResolver::new();
+        resolver.add_resolver(chipset::dma::resolver::GenericIsaDmaResolver);
+        let variants: &[fn() -> BaseChipsetDevices] = &[
+            #[cfg(feature = "dev_generic_isa_floppy")]
+            || BaseChipsetDevices {
+                deps_generic_isa_floppy: Some(dev::GenericIsaFloppyDeps {
+                    irq: 6,
+                    dma_channel: 2,
+                    pio_base: 0x3f0,
+                    drives: floppy::DriveRibbon::None,
+                }),
+                ..BaseChipsetDevices::empty()
+            },
+            #[cfg(feature = "dev_winbond_super_io_and_floppy_full")]
+            || BaseChipsetDevices {
+                deps_winbond_super_io_and_floppy_full: Some(dev::WinbondSuperIoAndFloppyFullDeps {
+                    primary_disk_drive: floppy::DriveRibbon::None,
+                    secondary_disk_drive: floppy::DriveRibbon::None,
+                }),
+                ..BaseChipsetDevices::empty()
+            },
+            #[cfg(feature = "dev_winbond_super_io_and_floppy_stub")]
+            || BaseChipsetDevices {
+                deps_winbond_super_io_and_floppy_stub: Some(dev::WinbondSuperIoAndFloppyStubDeps),
+                ..BaseChipsetDevices::empty()
+            },
+        ];
+
+        for devices in variants {
+            let err = base_chipset(&fixture, &power, devices(), &resolver, |b| b)
+                .await
+                .err()
+                .unwrap();
+            assert!(
+                matches!(err, BaseChipsetBuilderError::NoDmaForFloppy),
+                "{err}"
+            );
+
+            let output = base_chipset(&fixture, &power, devices(), &resolver, |b| {
+                b.with_isa_dma_handle(Some(
+                    chipset_resources::isa_dma::GenericIsaDmaDeviceHandle.into_resource(),
+                ))
+            })
+            .await
+            .unwrap();
+            output.chipset_builder.build().unwrap();
+        }
+    }
+
+    // Test: A base chipset with a PIC added from a device handle, an external
+    //       target on the BSP LINT line set, and a device that raises IRQ 5 and
+    //       IRQ 10 after the guest initializes both PICs; then a device handle
+    //       that has no resolver.
+    // Expected: Each IRQ makes the PIC signal the processor through the
+    //       external target and acknowledges as base vector plus IRQ (through
+    //       the cascade for IRQ 10); the unresolvable handle fails the build.
+    #[async_test]
+    async fn irq_lines_reach_the_pic_and_external_targets(driver: DefaultDriver) {
+        let fixture = Fixture::new(&driver).await;
+        let power = Arc::new(RecordPower::default());
+        let shared = Arc::new(Mutex::new(Shared::default()));
+        let mut resolver = ResourceResolver::new();
+        resolver.add_resolver(chipset::pic::resolver::PicResolver);
+        let pic = || ChipsetDeviceHandle {
+            name: "pic".into(),
+            resource: chipset_resources::pic::PicDeviceHandle.into_resource(),
+        };
+
+        {
+            let output = base_chipset(
+                &fixture,
+                &power,
+                BaseChipsetDevices::empty(),
+                &resolver,
+                |b| b.with_device_handles(vec![pic()]),
+            )
+            .await
+            .unwrap();
+            let builder = output.chipset_builder;
+            let lint = Arc::new(RecordLines::default());
+            builder.add_external_line_target(BSP_LINT_LINE_SET, 0..=0, 0, "test", lint.clone());
+            let irq5 = builder
+                .arc_mutex_device("irq5")
+                .add(|services| TestDevice {
+                    line: Some(services.new_line(IRQ_LINE_SET, "test", 5)),
+                    ..TestDevice::new("irq5", &shared)
+                })
+                .unwrap();
+            let irq10 = builder
+                .arc_mutex_device("irq10")
+                .add(|services| TestDevice {
+                    line: Some(services.new_line(IRQ_LINE_SET, "test", 10)),
+                    ..TestDevice::new("irq10", &shared)
+                })
+                .unwrap();
+            let (chipset, _devices) = builder.build().unwrap();
+
+            // ICW1-ICW4 for the primary (vectors 0x20, secondary on IRQ 2) and
+            // secondary (vectors 0x28, cascade identity 2) PICs, then unmask.
+            for (port, value) in [
+                (0x20, 0x11),
+                (0x21, 0x20),
+                (0x21, 0x04),
+                (0x21, 0x01),
+                (0x21, 0x00),
+                (0xa0, 0x11),
+                (0xa1, 0x28),
+                (0xa1, 0x02),
+                (0xa1, 0x01),
+                (0xa1, 0x00),
+            ] {
+                port_write(&chipset, port, value).await;
+            }
+            assert_eq!(chipset.acknowledge_pic_interrupt(), None);
+
+            irq5.lock().line.as_ref().unwrap().set_level(true);
+            assert_eq!(lint.0.lock().last(), Some(&(0, true)));
+            assert_eq!(chipset.acknowledge_pic_interrupt(), Some(0x25));
+
+            irq10.lock().line.as_ref().unwrap().set_level(true);
+            assert_eq!(lint.0.lock().last(), Some(&(0, true)));
+            assert_eq!(chipset.acknowledge_pic_interrupt(), Some(0x2a));
+        }
+
+        let err = base_chipset(
+            &fixture,
+            &power,
+            BaseChipsetDevices::empty(),
+            &ResourceResolver::new(),
+            |b| b.with_device_handles(vec![pic()]),
+        )
+        .await
+        .err()
+        .unwrap();
+        assert!(
+            matches!(err, BaseChipsetBuilderError::AddDevice(_)),
+            "{err}"
+        );
+        assert!(err.to_string().contains("pic"), "{err}");
+    }
+}
