@@ -963,7 +963,7 @@ impl<T: DeviceBacking + Send> Queue for ManaQueue<T> {
         &mut self,
         pool: &mut dyn BufferAccess,
         packets: &mut [RxId],
-    ) -> anyhow::Result<usize> {
+    ) -> anyhow::Result<Vec<net_backend::RxBufferCompletion>> {
         let mut i = 0;
         let mut commit = false;
         while i < packets.len() {
@@ -1057,7 +1057,11 @@ impl<T: DeviceBacking + Send> Queue for ManaQueue<T> {
         if commit {
             self.rx_wq.commit();
         }
-        Ok(i)
+        Ok(packets[..i]
+            .iter()
+            .copied()
+            .map(net_backend::RxBufferCompletion::single)
+            .collect())
     }
 
     fn tx_avail(

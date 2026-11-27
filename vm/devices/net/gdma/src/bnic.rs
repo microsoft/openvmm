@@ -698,7 +698,11 @@ impl TxRxTask {
 
     fn process_backend(&mut self) -> anyhow::Result<()> {
         let mut packets = [RxId(0)];
-        if self.epqueue.rx_poll(&mut self.pool, &mut packets)? > 0 {
+        if !self
+            .epqueue
+            .rx_poll(&mut self.pool, &mut packets)?
+            .is_empty()
+        {
             tracing::trace!("rx complete");
             let packet = self
                 .pool
@@ -802,7 +806,7 @@ mod tests {
             &mut self,
             pool: &mut dyn BufferAccess,
             packets: &mut [RxId],
-        ) -> anyhow::Result<usize> {
+        ) -> anyhow::Result<Vec<net_backend::RxBufferCompletion>> {
             let mut state = self.state.lock();
             state.ready_processed += 1;
             let count = if let Some(id) = state.rx.take() {
@@ -822,7 +826,11 @@ mod tests {
             };
             drop(state);
             self.ready_hook.fire();
-            Ok(count)
+            Ok(packets[..count]
+                .iter()
+                .copied()
+                .map(net_backend::RxBufferCompletion::single)
+                .collect())
         }
 
         fn tx_avail(

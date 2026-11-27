@@ -446,9 +446,9 @@ impl NetQueue for TestNicQueue {
         &mut self,
         pool: &mut dyn BufferAccess,
         packets: &mut [RxId],
-    ) -> anyhow::Result<usize> {
+    ) -> anyhow::Result<Vec<net_backend::RxBufferCompletion>> {
         if packets.is_empty() || self.rx_ids.is_empty() {
-            return Ok(0);
+            return Ok(Vec::new());
         }
 
         if self.next_rx_packet.is_none() {
@@ -474,9 +474,9 @@ impl NetQueue for TestNicQueue {
             );
             pool.write_packet(rx_id, &metadata, &packet);
             packets[0] = rx_id;
-            Ok(1)
+            Ok(vec![net_backend::RxBufferCompletion::single(packets[0])])
         } else {
-            Ok(0)
+            Ok(Vec::new())
         }
     }
 

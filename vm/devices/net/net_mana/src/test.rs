@@ -1020,7 +1020,8 @@ async fn test_endpoint(
         }
         rx_packets_n += queues[0]
             .rx_poll(&mut pool, &mut rx_packets[rx_packets_n..])
-            .unwrap();
+            .unwrap()
+            .len();
         // GDMA Errors generate a TryReturn error, ignored here.
         tx_done_n += queues[0]
             .tx_poll(&mut pool, &mut tx_done[tx_done_n..])

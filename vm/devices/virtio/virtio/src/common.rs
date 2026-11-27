@@ -423,6 +423,23 @@ impl VirtioQueue {
         }
     }
 
+    /// Completes a group of descriptors with one used-ring publication and notification.
+    pub fn complete_prepared_batch(&mut self, completions: Vec<(QueueCompletion, u32)>) {
+        for (completion, _) in &completions {
+            self.core.work_completed(completion);
+        }
+        match self.complete.complete_descriptors(&completions) {
+            Ok(true) => self.notify_guest.deliver(),
+            Ok(false) => {}
+            Err(err) => {
+                tracelimit::error_ratelimited!(
+                    error = &err as &dyn std::error::Error,
+                    "failed to complete descriptor batch"
+                );
+            }
+        }
+    }
+
     fn poll_next_buffer(
         &mut self,
         cx: &mut Context<'_>,

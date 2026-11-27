@@ -37,8 +37,6 @@ impl AsyncResolveResource<VirtioDeviceHandle, VirtioNetHandle> for VirtioNetReso
         if let Some(max_queues) = resource.max_queues {
             builder = builder.max_queues(max_queues);
         }
-        builder = builder.enable_rx_gso(resource.enable_rx_gso);
-
         let endpoint = resolver
             .resolve(
                 resource.endpoint,

@@ -28,6 +28,7 @@ use net_backend::BufferAccess;
 use net_backend::L4Protocol;
 use net_backend::QueueConfig;
 use net_backend::RssConfig;
+use net_backend::RxBufferCompletion;
 use net_backend::RxChecksumState;
 use net_backend::RxGsoProtocol;
 use net_backend::RxId;
@@ -747,13 +748,12 @@ impl net_backend::Queue for ConsommeQueue {
     fn rx_poll(
         &mut self,
         _pool: &mut dyn BufferAccess,
-        packets: &mut [RxId],
-    ) -> anyhow::Result<usize> {
-        let n = packets.len().min(self.state.rx_ready.len());
-        for (x, y) in packets.iter_mut().zip(self.state.rx_ready.drain(..n)) {
-            *x = y;
-        }
-        Ok(n)
+        buffers: &mut [RxId],
+    ) -> anyhow::Result<Vec<RxBufferCompletion>> {
+        Ok(net_backend::drain_rx_packets(
+            &mut self.state.rx_ready,
+            buffers,
+        ))
     }
 
     fn tx_avail(
@@ -780,7 +780,7 @@ impl net_backend::Queue for ConsommeQueue {
 
 struct QueueState {
     rx_avail: VecDeque<RxId>,
-    rx_ready: VecDeque<RxId>,
+    rx_ready: VecDeque<Vec<RxId>>,
     tx_avail: VecDeque<TxSegment>,
     tx_ready: VecDeque<TxId>,
     /// Reusable scratch buffer for assembling outbound packets from guest memory.
@@ -832,82 +832,92 @@ impl consomme::Client for Client<'_> {
     }
 
     fn recv_segments(&mut self, segments: &[&[u8]], checksum: &ChecksumState) {
-        let Some(rx_id) = self.state.rx_avail.pop_front() else {
-            // This should be rare, only affecting unbuffered protocols. TCP and
-            // UDP are buffered and they won't indicate packets unless rx_mtu()
-            // returns a non-zero value.
-            self.stats.rx_dropped.increment();
-            return;
-        };
-        let max = self.pool.capacity(rx_id) as usize;
         let len: usize = segments.iter().map(|s| s.len()).sum();
-        if len <= max {
-            let offload = if let Some(mss) = checksum.tso {
-                // Consomme-generated TCP frames have fixed Ethernet/IP headers,
-                // and the first segment contains the entire TCP header.
-                let (protocol, start) = if checksum.ipv4 {
-                    (RxGsoProtocol::TcpV4, ETHERNET_HEADER_LEN + IPV4_HEADER_LEN)
-                } else {
-                    (RxGsoProtocol::TcpV6, ETHERNET_HEADER_LEN + IPV6_HEADER_LEN)
-                };
-                assert!(checksum.tcp && self.rx_gso_supported(!checksum.ipv4));
-                let tcp_header_len =
-                    u16::from(TcpPacket::new_unchecked(&segments[0][start..]).header_len());
-                RxOffload::tcp_gso(
-                    protocol,
-                    start as u16 + tcp_header_len,
-                    mss,
-                    Some(start as u16),
-                )
-            } else if checksum.partial {
-                assert!(self.rx_checksum_supported() && (checksum.tcp != checksum.udp));
-                let start = ETHERNET_HEADER_LEN
-                    + if checksum.ipv4 {
-                        IPV4_HEADER_LEN
-                    } else {
-                        IPV6_HEADER_LEN
-                    };
-                RxOffload::checksum(start as u16, if checksum.tcp { 16 } else { 6 })
+        let offload = if let Some(mss) = checksum.tso {
+            // Consomme's first segment contains fixed Ethernet/IP headers
+            // followed by the entire TCP header.
+            let (protocol, start) = if checksum.ipv4 {
+                (RxGsoProtocol::TcpV4, ETHERNET_HEADER_LEN + IPV4_HEADER_LEN)
             } else {
-                RxOffload::default()
+                (RxGsoProtocol::TcpV6, ETHERNET_HEADER_LEN + IPV6_HEADER_LEN)
             };
-            self.pool.write_packet_segments(
-                rx_id,
-                &RxMetadata {
-                    offset: 0,
-                    len,
-                    ip_checksum: if checksum.ipv4 {
-                        RxChecksumState::Good
-                    } else {
-                        RxChecksumState::Unknown
-                    },
-                    l4_checksum: if checksum.partial {
-                        RxChecksumState::Unknown
-                    } else if checksum.tcp || checksum.udp {
-                        RxChecksumState::Good
-                    } else {
-                        RxChecksumState::Unknown
-                    },
-                    l4_protocol: if checksum.tcp {
-                        L4Protocol::Tcp
-                    } else if checksum.udp {
-                        L4Protocol::Udp
-                    } else {
-                        L4Protocol::Unknown
-                    },
-                    offload,
-                    vlan: None,
-                },
-                segments,
-            );
-            self.state.rx_ready.push_back(rx_id);
+            assert!(checksum.tcp && self.rx_gso_supported(!checksum.ipv4));
+            let tcp_header_len =
+                u16::from(TcpPacket::new_unchecked(&segments[0][start..]).header_len());
+            RxOffload::tcp_gso(
+                protocol,
+                start as u16 + tcp_header_len,
+                mss,
+                Some(start as u16),
+            )
+        } else if checksum.partial {
+            assert!(self.rx_checksum_supported() && (checksum.tcp != checksum.udp));
+            let start = ETHERNET_HEADER_LEN
+                + if checksum.ipv4 {
+                    IPV4_HEADER_LEN
+                } else {
+                    IPV6_HEADER_LEN
+                };
+            RxOffload::checksum(start as u16, if checksum.tcp { 16 } else { 6 })
         } else {
-            tracing::warn!(len, max, "dropping rx packet: too large");
-            self.state.rx_avail.push_front(rx_id);
+            RxOffload::default()
+        };
+        let metadata = RxMetadata {
+            offset: 0,
+            len,
+            ip_checksum: if checksum.ipv4 {
+                RxChecksumState::Good
+            } else {
+                RxChecksumState::Unknown
+            },
+            l4_checksum: if checksum.partial {
+                RxChecksumState::Unknown
+            } else if checksum.tcp || checksum.udp {
+                RxChecksumState::Good
+            } else {
+                RxChecksumState::Unknown
+            },
+            l4_protocol: if checksum.tcp {
+                L4Protocol::Tcp
+            } else if checksum.udp {
+                L4Protocol::Udp
+            } else {
+                L4Protocol::Unknown
+            },
+            offload,
+            vlan: None,
+        };
+
+        if let Some(ids) =
+            net_backend::write_rx_packet(self.pool, &mut self.state.rx_avail, &metadata, segments)
+        {
+            self.state.rx_ready.push_back(ids);
+        } else {
+            self.stats.rx_dropped.increment();
         }
     }
 
     fn rx_mtu(&mut self) -> usize {
+        if self.pool.supports_multiple_buffers() {
+            let max = if self.rx_gso_supported(false) || self.rx_gso_supported(true) {
+                65536
+            } else {
+                consomme::MIN_MTU
+            };
+            let mut capacity = 0usize;
+            for (index, &id) in self.state.rx_avail.iter().enumerate() {
+                capacity =
+                    capacity.saturating_add(self.pool.packet_buffer_capacity(id, index) as usize);
+                if capacity >= max {
+                    return max;
+                }
+            }
+            return if capacity >= consomme::MIN_MTU {
+                capacity
+            } else {
+                0
+            };
+        }
         if let Some(&rx_id) = self.state.rx_avail.front() {
             self.pool.capacity(rx_id) as usize
         } else {
