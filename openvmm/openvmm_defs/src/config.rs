@@ -67,6 +67,10 @@ pub struct Config {
     pub layout: vmm_core_defs::LayoutConfig,
     // This is used for testing. TODO: resourcify, and also store this in VMGS.
     pub rtc_delta_milliseconds: i64,
+    /// Channel to the VM Generation ID device (see
+    /// `VmManifestBuilder::with_generation_id`), on which the VM worker sends
+    /// a new ID when the VM is created from a snapshot.
+    pub generation_id_send: Option<mesh::Sender<[u8; 16]>>,
 }
 
 pub const DEFAULT_GIC_DISTRIBUTOR_BASE: u64 = 0xFFFF_0000;
