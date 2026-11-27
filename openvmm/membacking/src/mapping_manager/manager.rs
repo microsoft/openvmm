@@ -13,6 +13,7 @@ use super::va_mapper::VaMapper;
 use super::va_mapper::VaMapperError;
 use crate::RemoteProcess;
 use crate::region_manager::MappingType;
+use futures::FutureExt;
 use futures::StreamExt;
 use futures::future::join_all;
 use guestmem::ProvideShareableRegions;
@@ -82,9 +83,10 @@ impl MappingManager {
     /// mapper.
     fn new_bare(spawn: impl Spawn, max_addr: u64, minimum_va_alignment: Option<usize>) -> Self {
         let (req_send, mut req_recv) = mesh::mpsc_channel();
+        let (fault_send, fault_recv) = mesh::mpsc_channel();
         spawn
             .spawn("mapping_manager", {
-                let mut task = MappingManagerTask::new();
+                let mut task = MappingManagerTask::with_faults(fault_recv);
                 async move {
                     task.run(&mut req_recv).await;
                 }
@@ -96,6 +98,7 @@ impl MappingManager {
                 req_send,
                 max_addr,
                 minimum_va_alignment,
+                fault_send: Some(fault_send),
             },
         }
     }
@@ -126,6 +129,9 @@ pub struct MappingManagerClient {
     id: ObjectId,
     max_addr: u64,
     minimum_va_alignment: Option<usize>,
+    /// Absent in older serialized clients. Only the separate fault protocol
+    /// permits a mapper to drain RCU while its coordinator awaits Unmap.
+    fault_send: Option<mesh::Sender<(MapperId, MemoryRange)>>,
 }
 
 static MAPPER_CACHE: ObjectCache<VaMapper> = ObjectCache::new();
@@ -175,6 +181,7 @@ impl MappingManagerClient {
             .get_or_insert_with(&self.id, async {
                 VaMapper::new(
                     self.req_send.clone(),
+                    self.fault_send.clone(),
                     self.max_addr,
                     None,
                     self.minimum_va_alignment,
@@ -213,6 +220,7 @@ impl MappingManagerClient {
         Ok(Arc::new(
             VaMapper::new(
                 self.req_send.clone(),
+                self.fault_send.clone(),
                 self.max_addr,
                 Some(process),
                 self.minimum_va_alignment,
@@ -270,9 +278,7 @@ pub enum MappingRequest {
     /// Register a new VA mapper.
     AddMapper(FailableRpc<AddMapperParams, MapperId>),
     RemoveMapper(MapperId),
-    /// Request that mappings covering the given range be sent to the specified
-    /// mapper via fire-and-forget `MapLazy` messages. Used by lazy mappers
-    /// to populate on demand.
+    /// Legacy clients resolve faults on the structural request channel.
     SendMappings(MapperId, MemoryRange),
     /// Upgrade a lazy mapper to eager: replay all existing mappings and
     /// mark it for future pushes.
@@ -290,6 +296,8 @@ struct MappingManagerTask {
     mappings: Vec<Mapping>,
     #[inspect(skip)]
     mappers: Mappers,
+    #[inspect(skip)]
+    fault_recv: futures::stream::Fuse<mesh::Receiver<(MapperId, MemoryRange)>>,
 }
 
 fn inspect_mappings(mappings: &Vec<Mapping>) -> impl '_ + Inspect {
@@ -477,17 +485,33 @@ pub enum MapperRequest {
 }
 
 impl MappingManagerTask {
-    fn new() -> Self {
+    fn with_faults(fault_recv: mesh::Receiver<(MapperId, MemoryRange)>) -> Self {
         Self {
             mappers: Mappers {
                 mappers: Slab::new(),
             },
             mappings: Vec::new(),
+            fault_recv: fault_recv.fuse(),
         }
     }
 
+    #[cfg(test)]
+    fn new() -> Self {
+        Self::with_faults(mesh::mpsc_channel().1)
+    }
+
     async fn run(&mut self, req_recv: &mut mesh::Receiver<MappingRequest>) {
-        while let Some(req) = req_recv.next().await {
+        loop {
+            let req = futures::select! {
+                req = req_recv.next().fuse() => {
+                    let Some(req) = req else { break };
+                    req
+                }
+                (id, range) = self.fault_recv.select_next_some() => {
+                    self.send_mappings(id, range);
+                    continue;
+                }
+            };
             match req {
                 MappingRequest::AddMapper(rpc) => {
                     rpc.handle_failable(async |params: AddMapperParams| {
@@ -532,6 +556,20 @@ impl MappingManagerTask {
                     rpc.handle_sync(|()| self.get_dma_target_mappings())
                 }
                 MappingRequest::Inspect(deferred) => deferred.inspect(&mut *self),
+            }
+        }
+    }
+
+    /// Structural requests remain serialized on their original channel, while
+    /// readers can still resolve faults during an RCU retirement.
+    async fn with_fault_progress<F: Future>(&mut self, future: F) -> F::Output {
+        let mut future = std::pin::pin!(future);
+        loop {
+            futures::select! {
+                result = future.as_mut().fuse() => return result,
+                (id, range) = self.fault_recv.select_next_some() => {
+                    self.send_mappings(id, range);
+                }
             }
         }
     }
@@ -666,6 +704,11 @@ impl MappingManagerTask {
     /// to the mapper via fire-and-forget `MapLazy` messages. Gaps send
     /// `NoMapping` so the mapper task can wake waiters with failure.
     fn send_mappings(&mut self, id: MapperId, mut range: MemoryRange) {
+        let Some(mapper) = self.mappers.mappers.get(id.0) else {
+            tracing::debug!(?id, "ignoring fault from removed mapper");
+            return;
+        };
+        let send = mapper.req_send.clone();
         while !range.is_empty() {
             // Find the next mapping that overlaps range.
             let (this_end, params) = if let Some(mapping) = self
@@ -699,7 +742,7 @@ impl MappingManagerTask {
                 tracing::debug!(range = %this_range, "no mapping for range");
                 MapperRequest::NoMapping(this_range)
             };
-            self.mappers.mappers[id.0].req_send.send(req);
+            send.send(req);
             range = MemoryRange::new(this_end..range.end());
         }
     }
@@ -714,7 +757,13 @@ impl MappingManagerTask {
             anyhow::bail!("cannot add private memory while multiple mappers are present");
         }
 
-        assert!(!self.mappings.iter().any(|m| m.params.range == params.range));
+        anyhow::ensure!(
+            !self
+                .mappings
+                .iter()
+                .any(|m| m.params.range.overlaps(&params.range)),
+            "overlapping mapping must be removed before replacement"
+        );
 
         // Push to eager mappers only. Lazy mappers will request on demand.
         let mut active_mappers = Vec::new();
@@ -735,9 +784,12 @@ impl MappingManagerTask {
                     // Unmap from mappers that already succeeded before returning
                     // the error.
                     for &rollback_id in &active_mappers {
-                        if let Err(err) = self.mappers.mappers[rollback_id.0]
-                            .req_send
-                            .call(MapperRequest::Unmap, params.range)
+                        let send = self.mappers.mappers[rollback_id.0].req_send.clone();
+                        let range = params.range;
+                        if let Err(err) = self
+                            .with_fault_progress(async move {
+                                send.call(MapperRequest::Unmap, range).await
+                            })
                             .await
                         {
                             tracing::warn!(
@@ -798,26 +850,29 @@ impl MappingManagerTask {
         });
         mappers.sort();
         mappers.dedup();
-        self.mappers.invalidate(&mappers, range).await;
+        let invalidation = self.mappers.invalidate(&mappers, range);
+        self.with_fault_progress(invalidation).await;
     }
 }
 
 impl Mappers {
-    async fn invalidate(&self, ids: &[MapperId], range: MemoryRange) {
+    fn invalidate(&self, ids: &[MapperId], range: MemoryRange) -> impl Future<Output = ()> + use<> {
         tracing::debug!(mapper_count = ids.len(), %range, "sending invalidations");
-        join_all(ids.iter().map(async |&MapperId(i)| {
-            if let Err(err) = self.mappers[i]
-                .req_send
-                .call(MapperRequest::Unmap, range)
-                .await
-            {
-                tracing::warn!(
-                    error = &err as &dyn std::error::Error,
-                    "mapper dropped invalidate request"
-                );
-            }
-        }))
-        .await;
+        let senders: Vec<_> = ids
+            .iter()
+            .map(|&MapperId(i)| self.mappers[i].req_send.clone())
+            .collect();
+        async move {
+            join_all(senders.into_iter().map(async |send| {
+                if let Err(err) = send.call(MapperRequest::Unmap, range).await {
+                    tracing::warn!(
+                        error = &err as &dyn std::error::Error,
+                        "mapper dropped invalidate request"
+                    );
+                }
+            }))
+            .await;
+        }
     }
 }
 
@@ -1484,6 +1539,7 @@ mod tests {
         let (req_send, mut req_recv) = mesh::channel::<MappingRequest>();
         let mapper_future = VaMapper::new(
             req_send,
+            Some(mesh::mpsc_channel().0),
             0x10000,
             None,
             None,
@@ -1524,6 +1580,7 @@ mod tests {
         let (req_send, mut req_recv) = mesh::channel::<MappingRequest>();
         let mapper_future = VaMapper::new(
             req_send,
+            Some(mesh::mpsc_channel().0),
             0x10000,
             None,
             None,
@@ -1709,6 +1766,382 @@ mod tests {
         drop(client);
         drop(mm);
         drop(manager_driver);
+        manager_thread.join().unwrap();
+    }
+
+    fn test_mapping(start: u64, writable: bool) -> MappingParams {
+        MappingParams {
+            range: MemoryRange::new(start..start + 4096),
+            backing: MappingBacking::File {
+                mappable: sparse_mmap::alloc_shared_memory(4096, "cached-mapping-test")
+                    .unwrap()
+                    .into(),
+                file_offset: 0,
+            },
+            writable,
+            mapping_type: MappingType::Ram,
+            policy: MemoryPolicy::none(),
+        }
+    }
+
+    #[pal_async::async_test]
+    async fn closed_fault_channel_keeps_metadata_requests_alive(_spawn: impl Spawn) {
+        let mut task = MappingManagerTask::new();
+        let (send, mut recv) = mesh::mpsc_channel();
+        let mut actor = std::pin::pin!(task.run(&mut recv));
+        let mut cx = std::task::Context::from_waker(std::task::Waker::noop());
+        assert!(actor.as_mut().poll(&mut cx).is_pending());
+        futures::join!(actor, async move {
+            let regions = send
+                .call(MappingRequest::GetDmaTargetMappings, ())
+                .await
+                .unwrap();
+            assert!(regions.is_empty());
+            drop(send);
+        });
+    }
+
+    #[pal_async::async_test]
+    async fn legacy_client_decodes_without_fault_protocol(_spawn: impl Spawn) {
+        #[derive(MeshPayload)]
+        struct LegacyClient {
+            req_send: mesh::Sender<MappingRequest>,
+            id: ObjectId,
+            max_addr: u64,
+            minimum_va_alignment: Option<usize>,
+        }
+        let legacy = LegacyClient {
+            req_send: mesh::channel().0,
+            id: ObjectId::new(),
+            max_addr: 0x10000,
+            minimum_va_alignment: None,
+        };
+        let client: MappingManagerClient = mesh::OwnedMessage::new(legacy).parse().unwrap();
+        assert!(client.fault_send.is_none());
+    }
+
+    #[pal_async::async_test]
+    async fn legacy_mapper_faults_and_unmaps_without_cache_retirement(_spawn: impl Spawn) {
+        use guestmem::GuestMemory;
+        use guestmem::cached::with_access;
+        use std::sync::mpsc;
+        use std::time::Duration;
+
+        let (manager_thread, driver) =
+            pal_async::DefaultPool::spawn_on_thread("legacy-mapping-manager");
+        let manager = MappingManager::new_without_primary(&driver, 0x10000, None);
+        let mut client = manager.client().clone();
+        client.fault_send = None;
+        client.add_mapping(test_mapping(0, true)).await.unwrap();
+        let mapper = client.new_mapper(false).await.unwrap();
+        assert!(mapper.cache_invalidation().is_none());
+        let memory = GuestMemory::new("legacy", mapper.clone());
+        memory.write_plain(0, &123u64).unwrap();
+        let mut cache = memory.cache_range(0, 64).unwrap();
+        let (done_send, done_recv) = mpsc::channel();
+        let removal_client = client.clone();
+        with_access(|scope| {
+            let access = cache.access(scope);
+            assert_eq!(access.read_plain::<u64>(0).unwrap(), 123);
+            let removal = std::thread::spawn(move || {
+                futures::executor::block_on(
+                    removal_client.remove_mappings(MemoryRange::new(0..4096)),
+                );
+                done_send.send(()).unwrap();
+            });
+            done_recv.recv_timeout(Duration::from_secs(5)).unwrap();
+            removal.join().unwrap();
+            assert!(access.read_plain::<u64>(0).is_err());
+        });
+        drop(cache);
+        drop(memory);
+        drop(mapper);
+        drop(client);
+        drop(manager);
+        drop(driver);
+        manager_thread.join().unwrap();
+    }
+
+    #[pal_async::async_test]
+    async fn failed_registration_does_not_wait_for_unrelated_readers(_spawn: impl Spawn) {
+        use guestmem::GuestMemory;
+        use guestmem::cached::with_access;
+        use std::sync::mpsc;
+        use std::time::Duration;
+
+        let (manager_thread, driver) =
+            pal_async::DefaultPool::spawn_on_thread("failed-mapper-registration");
+        let manager = MappingManager::new_without_primary(&driver, 0x10000, None);
+        let client = manager.client().clone();
+        client
+            .add_mapping(MappingParams {
+                backing: MappingBacking::Private,
+                ..test_mapping(0, true)
+            })
+            .await
+            .unwrap();
+        let mapper = client.new_mapper(true).await.unwrap();
+        let memory = GuestMemory::new("held-reader", mapper.clone());
+        let mut cache = memory.cache_range(0, 64).unwrap();
+        let (entered_send, entered_recv) = mpsc::channel();
+        let (release_send, release_recv) = mpsc::channel();
+        let reader = std::thread::spawn(move || {
+            with_access(|scope| {
+                assert_eq!(cache.access(scope).read_plain::<u64>(0).unwrap(), 0);
+                entered_send.send(()).unwrap();
+                release_recv.recv().unwrap();
+            });
+        });
+        entered_recv.recv_timeout(Duration::from_secs(5)).unwrap();
+        let request = client.req_send.clone();
+        let faults = client.fault_send.clone();
+        let (done_send, done_recv) = mpsc::channel();
+        let registration = std::thread::spawn(move || {
+            let result = futures::executor::block_on(VaMapper::new(
+                request,
+                faults,
+                0x10000,
+                None,
+                None,
+                true,
+                MapperRole::Secondary,
+            ));
+            done_send.send(result.is_err()).unwrap();
+        });
+        let result = done_recv.recv_timeout(Duration::from_secs(2));
+        release_send.send(()).unwrap();
+        reader.join().unwrap();
+        registration.join().unwrap();
+        drop(memory);
+        drop(mapper);
+        drop(client);
+        drop(manager);
+        drop(driver);
+        manager_thread.join().unwrap();
+        assert!(
+            matches!(result, Ok(true)),
+            "failed mapper waited for an unrelated RCU reader: {result:?}"
+        );
+    }
+
+    #[pal_async::async_test]
+    async fn cached_reader_faults_unrelated_range_during_retirement(_spawn: impl Spawn) {
+        use guestmem::GuestMemory;
+        use guestmem::cached::PageAccess;
+        use guestmem::cached::PagesAccess;
+        use guestmem::cached::with_access;
+        use std::sync::mpsc;
+        use std::time::Duration;
+        use std::time::Instant;
+
+        let (manager_thread, driver) =
+            pal_async::DefaultPool::spawn_on_thread("cached-mapping-manager");
+        let manager = MappingManager::new_without_primary(&driver, 0x10000, None);
+        let client = manager.client().clone();
+        client.add_mapping(test_mapping(0, true)).await.unwrap();
+        client.add_mapping(test_mapping(4096, true)).await.unwrap();
+        client.add_mapping(test_mapping(8192, true)).await.unwrap();
+        let mapper = client.new_mapper(false).await.unwrap();
+        let memory = GuestMemory::new("cached-lazy", mapper.clone());
+        memory.write_plain(0, &123u64).unwrap();
+        assert!(mapper.cached_access(0, 8).read);
+        assert!(!mapper.cached_access(4096, 8).read);
+        let mut cache = memory.cache_range(0, 64).unwrap();
+        let (entered_send, entered_recv) = mpsc::channel();
+        let (reader_send, reader_recv) = mpsc::channel();
+        let reader_mapper = mapper.clone();
+        let reader_memory = memory.clone();
+        let reader = std::thread::spawn(move || {
+            let mut required = reader_memory.cache_pages_required(&[1]).unwrap();
+            with_access(|scope| {
+                let access = cache.access(scope);
+                assert_eq!(access.read_plain::<u64>(0).unwrap(), 123);
+                entered_send.send(()).unwrap();
+                let deadline = Instant::now() + Duration::from_secs(5);
+                while reader_mapper.cached_access(0, 8).read {
+                    assert!(
+                        Instant::now() < deadline,
+                        "retirement did not close admission"
+                    );
+                    std::thread::yield_now();
+                }
+                // Both actors must service this fault while waiting for the
+                // current reader to stop using the unrelated old mapping.
+                let prepared = required.access(scope).unwrap();
+                assert_eq!(prepared.page(0).unwrap().read_plain::<u64>(0).unwrap(), 0);
+                assert_eq!(reader_memory.read_plain::<u64>(8192).unwrap(), 0);
+                assert_eq!(access.read_plain::<u64>(0).unwrap(), 123);
+            });
+            reader_send.send(()).unwrap();
+            cache
+        });
+        entered_recv.recv_timeout(Duration::from_secs(5)).unwrap();
+        let (removed_send, removed_recv) = mpsc::channel();
+        let removal_client = client.clone();
+        let removal = std::thread::spawn(move || {
+            futures::executor::block_on(removal_client.remove_mappings(MemoryRange::new(0..4096)));
+            removed_send.send(()).unwrap();
+        });
+        reader_recv.recv_timeout(Duration::from_secs(5)).unwrap();
+        let mut cache = reader.join().unwrap();
+        removed_recv.recv_timeout(Duration::from_secs(5)).unwrap();
+        removal.join().unwrap();
+        assert!(memory.read_plain::<u64>(0).is_err());
+        assert_eq!(memory.read_plain::<u64>(4096).unwrap(), 0);
+
+        client.add_mapping(test_mapping(0, true)).await.unwrap();
+        memory.write_plain(0, &456u64).unwrap();
+        with_access(|scope| assert_eq!(cache.access(scope).read_plain::<u64>(0).unwrap(), 456));
+        drop(cache);
+        drop(memory);
+        drop(mapper);
+        drop(client);
+        drop(manager);
+        drop(driver);
+        manager_thread.join().unwrap();
+    }
+
+    #[pal_async::async_test]
+    async fn manager_disconnect_drains_published_cached_readers(_spawn: impl Spawn) {
+        use guestmem::GuestMemory;
+        use guestmem::cached::with_access;
+        use std::sync::mpsc;
+        use std::time::Duration;
+        use std::time::Instant;
+
+        let (manager_thread, driver) =
+            pal_async::DefaultPool::spawn_on_thread("cached-mapper-disconnect");
+        let (req_send, mut req_recv) = mesh::mpsc_channel();
+        let (fault_send, fault_recv) = mesh::mpsc_channel();
+        let (stop_send, stop_recv) = mesh::oneshot::<()>();
+        driver
+            .spawn("disconnectable-manager", async move {
+                let mut task = MappingManagerTask::with_faults(fault_recv);
+                futures::select! {
+                    _ = task.run(&mut req_recv).fuse() => {},
+                    _ = stop_recv.fuse() => {},
+                }
+            })
+            .detach();
+        let client = MappingManagerClient {
+            req_send,
+            id: ObjectId::new(),
+            max_addr: 0x10000,
+            minimum_va_alignment: None,
+            fault_send: Some(fault_send),
+        };
+        client.add_mapping(test_mapping(0, true)).await.unwrap();
+        let mapper = client.new_mapper(true).await.unwrap();
+        let memory = GuestMemory::new("cached-disconnect", mapper.clone());
+        memory.write_plain(0, &123u64).unwrap();
+        let mut cache = memory.cache_range(0, 64).unwrap();
+        let (entered_send, entered_recv) = mpsc::channel();
+        let (release_send, release_recv) = mpsc::channel();
+        let reader = std::thread::spawn(move || {
+            with_access(|scope| {
+                let access = cache.access(scope);
+                assert_eq!(access.read_plain::<u64>(0).unwrap(), 123);
+                entered_send.send(()).unwrap();
+                release_recv.recv().unwrap();
+                assert_eq!(access.read_plain::<u64>(0).unwrap(), 123);
+            });
+        });
+        entered_recv.recv_timeout(Duration::from_secs(5)).unwrap();
+        stop_send.send(());
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while mapper.cached_access(0, 8).read {
+            assert!(
+                Instant::now() < deadline,
+                "shutdown did not close admission"
+            );
+            std::thread::yield_now();
+        }
+        release_send.send(()).unwrap();
+        reader.join().unwrap();
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while memory.read_plain::<u64>(0).is_ok() {
+            assert!(Instant::now() < deadline, "shutdown did not unmap memory");
+            std::thread::yield_now();
+        }
+        drop(memory);
+        drop(mapper);
+        drop(client);
+        drop(driver);
+        manager_thread.join().unwrap();
+    }
+
+    #[pal_async::async_test]
+    async fn cached_ranges_respect_readonly_mappings_and_holes(_spawn: impl Spawn) {
+        use guestmem::GuestMemory;
+        use guestmem::cached::with_access;
+
+        let (manager_thread, driver) =
+            pal_async::DefaultPool::spawn_on_thread("cached-mapping-permissions");
+        let manager = MappingManager::new_without_primary(&driver, 0x10000, None);
+        let client = manager.client().clone();
+        client.add_mapping(test_mapping(0, false)).await.unwrap();
+        client.add_mapping(test_mapping(4096, true)).await.unwrap();
+        let mapper = client.new_mapper(true).await.unwrap();
+        let memory = GuestMemory::new("cached-permissions", mapper.clone());
+        let mut required = memory.cache_pages_required(&[0, 1]).unwrap();
+        with_access(|scope| assert!(required.access(scope).is_err()));
+        let ready = mapper.cached_access(0, 8192);
+        assert!(ready.read);
+        assert!(!ready.write);
+        let mut cache = memory.cache_range(0, 8192).unwrap();
+        with_access(|scope| {
+            let access = cache.access(scope);
+            assert_eq!(access.read_plain::<u64>(0).unwrap(), 0);
+            assert!(access.write_plain(0, &99u64).is_err());
+            access.write_plain(4096, &42u64).unwrap();
+            assert_eq!(access.read_plain::<u64>(4096).unwrap(), 42);
+        });
+        assert!(!mapper.cached_access(4096, 8192).read);
+        let mut hole = memory.cache_range(4096, 8192).unwrap();
+        with_access(|scope| {
+            let access = hole.access(scope);
+            assert_eq!(access.read_plain::<u64>(0).unwrap(), 42);
+            assert!(access.read_plain::<u64>(4096).is_err());
+        });
+        drop(hole);
+        drop(cache);
+        drop(required);
+        drop(memory);
+        drop(mapper);
+        drop(client);
+        drop(manager);
+        drop(driver);
+        manager_thread.join().unwrap();
+    }
+
+    #[pal_async::async_test]
+    async fn repeated_lazy_private_mapping_preserves_contents(_spawn: impl Spawn) {
+        use guestmem::GuestMemory;
+
+        let (manager_thread, driver) =
+            pal_async::DefaultPool::spawn_on_thread("cached-private-mapping");
+        let manager = MappingManager::new_without_primary(&driver, 0x10000, None);
+        let client = manager.client().clone();
+        client
+            .add_mapping(MappingParams {
+                backing: MappingBacking::Private,
+                ..test_mapping(0, true)
+            })
+            .await
+            .unwrap();
+        let mapper = client.new_mapper(false).await.unwrap();
+        let memory = GuestMemory::new("private", mapper.clone());
+        memory.write_plain(0, &123u64).unwrap();
+        assert!(matches!(
+            mapper.page_fault(0, 8, false, false),
+            guestmem::PageFaultAction::Retry
+        ));
+        assert_eq!(memory.read_plain::<u64>(0).unwrap(), 123);
+        drop(memory);
+        drop(mapper);
+        drop(client);
+        drop(manager);
+        drop(driver);
         manager_thread.join().unwrap();
     }
 }

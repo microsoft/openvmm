@@ -296,6 +296,7 @@ macro_rules! try_read {
     ($vis:vis $func:ident, $ty:ty, $asm:expr) => {
         /// # Safety
         /// `src` must be an address that's reserved.
+        #[inline]
         $vis unsafe fn $func(src: *const $ty) -> Result<$ty, Fault> {
             // SAFETY: caller ensured.
             unsafe {
@@ -332,6 +333,7 @@ macro_rules! try_write {
         /// # Safety
         /// `dest` must be an address that's reserved and can be written to
         /// without violating Rust's aliasing rules.
+        #[inline]
         $vis unsafe fn $func(dest: *mut $ty, val: $ty) -> Result<(), Fault> {
             // SAFETY: caller ensured.
             unsafe {
