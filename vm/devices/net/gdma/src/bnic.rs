@@ -206,6 +206,17 @@ impl InspectMut for Vport {
     }
 }
 
+impl Vport {
+    /// Stops the data path, if there is one, and takes back the endpoint's queues.
+    async fn stop_data_path(&mut self) {
+        if self.task.has_state() {
+            self.task.stop().await;
+            self.task.remove();
+            self.endpoint.stop().await;
+        }
+    }
+}
+
 struct QueueCfg {
     tx: Option<(u32, u32)>,
     rx: Option<(u32, u32)>,
@@ -235,6 +246,23 @@ impl BasicNic {
             .collect();
 
         Self { vports, config }
+    }
+
+    /// Stops the data path of each vport and forgets its queues.
+    pub async fn reset(&mut self) {
+        let Self { vports, config: _ } = self;
+        for vport in vports {
+            vport.stop_data_path().await;
+            let Vport {
+                mac_address: _,
+                endpoint: _,
+                task: _,
+                queue_cfg,
+                serial_no,
+            } = vport;
+            *queue_cfg = QueueCfg { tx: None, rx: None };
+            *serial_no = 0;
+        }
     }
 
     pub async fn handle_req(
@@ -377,10 +405,8 @@ impl BasicNic {
                     .context("invalid vport")?;
 
                 match req.rx_enable {
-                    Tristate::FALSE if vport.task.is_running() => {
-                        vport.task.stop().await;
-                        vport.task.remove();
-                        vport.endpoint.stop().await;
+                    Tristate::FALSE => {
+                        vport.stop_data_path().await;
                     }
                     Tristate::TRUE if !vport.task.is_running() => {
                         if let (Some((sq_id, sq_cq_id)), Some((rq_id, rq_cq_id))) =

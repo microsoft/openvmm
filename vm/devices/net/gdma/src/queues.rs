@@ -419,6 +419,28 @@ impl Queues {
         Ok(())
     }
 
+    /// Frees all queues.
+    pub fn reset(&self) {
+        let Self {
+            gm: _,
+            driver: _,
+            sqs,
+            rqs,
+            cqs,
+            eqs,
+            msis: _,
+        } = self;
+        for wq in sqs.iter().chain(rqs) {
+            *wq.lock() = None;
+        }
+        for cq in cqs {
+            *cq.lock() = None;
+        }
+        for eq in eqs {
+            *eq.lock() = None;
+        }
+    }
+
     fn sq(&self, sq_id: u32) -> Option<MappedMutexGuard<'_, Wq>> {
         MutexGuard::try_map(
             self.sqs
