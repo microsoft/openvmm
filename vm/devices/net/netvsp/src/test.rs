@@ -155,6 +155,8 @@ struct TestNicEndpointState {
     /// Sender for injecting arbitrary `EndpointAction`s into the endpoint's
     /// `wait_for_endpoint_action` path. Populated by `TestNicEndpoint::new`.
     pub endpoint_action_updater: Option<mesh::Sender<EndpointAction>>,
+    /// The receive offloads each queue was started with.
+    pub rx_offloads: Vec<net_backend::RxOffloadSupport>,
 }
 
 impl TestNicEndpointState {
@@ -171,6 +173,7 @@ impl TestNicEndpointState {
             tx_metadata: Vec::new(),
             tx_restart_triggers: Vec::new(),
             endpoint_action_updater: None,
+            rx_offloads: Vec::new(),
         }))
     }
 
@@ -280,6 +283,12 @@ impl net_backend::Endpoint for TestNicEndpoint {
             .endpoint_state
             .as_ref()
             .is_none_or(|s| s.lock().sync_tx);
+        if let Some(endpoint_state) = &inner.endpoint_state {
+            endpoint_state
+                .lock()
+                .rx_offloads
+                .extend(config.iter().map(|config| config.enabled_rx_offloads));
+        }
         let senders = config
             .into_iter()
             .enumerate()
@@ -6960,6 +6969,40 @@ async fn inject_and_parse_rx(
         .await;
 
     ppi
+}
+
+/// The guest reads the tag from the VLAN PPI, so the backend has to take it out of the frame.
+#[async_test]
+async fn backend_is_asked_for_the_vlan_tag_out_of_band(driver: DefaultDriver) {
+    let endpoint_state = TestNicEndpointState::new();
+    let endpoint = TestNicEndpoint::new(Some(endpoint_state.clone()));
+    let nic = Nic::builder().build(
+        &VmTaskDriverSource::new(SingleDriverBackend::new(driver.clone())),
+        Guid::new_random(),
+        Box::new(endpoint),
+        [1, 2, 3, 4, 5, 6].into(),
+        0,
+    );
+
+    let mut nic_dev = TestNicDevice::new_with_nic(&driver, nic).await;
+    nic_dev.start_vmbus_channel();
+    let mut channel = nic_dev.connect_vmbus_channel().await;
+    channel
+        .initialize(0, protocol::NdisConfigCapabilities::new())
+        .await;
+    initialize_rndis_for_rx(&mut channel).await;
+
+    let parser = channel.rndis_message_parser();
+    let data = vec![0xAA; 60];
+    let metadata = RxMetadata {
+        len: data.len(),
+        ..Default::default()
+    };
+    inject_and_parse_rx(&mut channel, &endpoint_state, &parser, data, metadata).await;
+
+    let state = endpoint_state.lock();
+    assert!(!state.rx_offloads.is_empty());
+    assert!(state.rx_offloads.iter().all(|offloads| offloads.vlan_strip));
 }
 
 #[async_test]
