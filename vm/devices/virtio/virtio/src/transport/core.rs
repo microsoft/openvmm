@@ -24,11 +24,14 @@ use mesh::rpc::Rpc;
 use mesh::rpc::RpcSend;
 use pal_async::task::Spawn;
 use pal_async::task::Task;
+use pci_core::capabilities::msix::MsixInterrupt;
 use std::sync::Arc;
 use std::task::Poll;
 use vmcore::interrupt::Interrupt;
 use vmcore::save_restore::RestoreError;
 use vmcore::save_restore::SaveError;
+
+pub(super) const VIRTIO_MSI_NO_VECTOR: u16 = 0xffff;
 
 /// Per-queue transport data shared between PCI and MMIO.
 #[derive(Inspect)]
@@ -36,7 +39,7 @@ pub(crate) struct QueueData {
     #[inspect(flatten)]
     pub params: QueueParams,
     pub initial_size: u16,
-    /// MSI-X vector for this queue (PCI only; always 0 for MMIO).
+    /// MSI-X vector for this queue. Unused for MMIO.
     pub msix_vector: u16,
     #[inspect(skip)]
     pub event: pal_event::Event,
@@ -108,6 +111,7 @@ impl VirtioTransportCore {
         driver: &impl Spawn,
         guest_memory: GuestMemory,
         doorbell_registration: Option<Arc<dyn DoorbellRegistration>>,
+        interrupts: Vec<MsixInterrupt>,
     ) -> std::io::Result<Self> {
         let traits = device.traits();
         let queues: Vec<QueueData> = (0..traits.max_queues)
@@ -120,7 +124,7 @@ impl VirtioTransportCore {
                         ..Default::default()
                     },
                     initial_size: size,
-                    msix_vector: 0,
+                    msix_vector: VIRTIO_MSI_NO_VECTOR,
                     event: pal_event::Event::new(),
                     saved_state: None,
                 })
@@ -138,7 +142,7 @@ impl VirtioTransportCore {
 
         let (sender, receiver) = mesh::channel();
         let device_task = driver.spawn("virtio-device-task", async move {
-            run_device_task(device, receiver).await;
+            run_device_task(device, receiver, interrupts).await;
         });
 
         Ok(Self {
@@ -244,7 +248,7 @@ impl VirtioTransportCore {
                 size: *initial_size,
                 ..Default::default()
             };
-            *msix_vector = 0;
+            *msix_vector = VIRTIO_MSI_NO_VECTOR;
         }
     }
 
@@ -426,6 +430,8 @@ impl VirtioTransportCore {
     /// `ChangeDeviceState::reset()` implementation.
     pub async fn reset(&mut self, ops: &mut dyn TransportOps) {
         let _ = self.state.drain().await;
+        // A queued mapping may be waiting for this STATUS write.
+        drop(self.pending_status_deferred.take());
         let _ = self.device_sender.call(DeviceCommand::Reset, ()).await;
         self.reset_status(ops);
     }
