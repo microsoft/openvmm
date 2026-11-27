@@ -842,6 +842,7 @@ mod tests {
 
     // Test: Release a read-side critical section while keeping its thread alive.
     // Expected: Synchronization waits for section exit, not thread teardown,
+    //       remains pending beyond its first timeout while the reader is active,
     //       and remains reusable after quiescence.
     #[async_test]
     async fn blocking_grace_period_waits_and_wakes_after_reader_exit(driver: DefaultDriver) {
@@ -878,8 +879,8 @@ mod tests {
             timer.sleep(std::time::Duration::from_millis(1)).await;
         }
         assert_eq!(
-            finished_recv.try_recv(),
-            Err(std::sync::mpsc::TryRecvError::Empty)
+            finished_recv.recv_timeout(std::time::Duration::from_millis(50)),
+            Err(std::sync::mpsc::RecvTimeoutError::Timeout)
         );
         release_send.send(()).unwrap();
         let finished = finished_recv.recv_timeout(std::time::Duration::from_secs(5));
