@@ -15,6 +15,16 @@ pub fn open_memory_backing_file(
     path: &std::path::Path,
     size: u64,
 ) -> anyhow::Result<SharedMemoryFd> {
+    file_to_shared_memory_fd(open_memory_backing_file_raw(path, size)?)
+}
+
+/// Like [`open_memory_backing_file`], but returns the opened file without
+/// converting it to a shared memory handle, so the caller can inspect it
+/// first.
+pub fn open_memory_backing_file_raw(
+    path: &std::path::Path,
+    size: u64,
+) -> anyhow::Result<std::fs::File> {
     let file = fs_err::OpenOptions::new()
         .read(true)
         .write(true)
@@ -35,7 +45,24 @@ pub fn open_memory_backing_file(
         );
     }
 
-    file_to_shared_memory_fd(file.into())
+    Ok(file.into())
+}
+
+/// Returns whether two opened files are the same underlying file, including
+/// through hard links. Fails if either file's identity cannot be determined.
+pub fn same_open_file(a: &std::fs::File, b: &std::fs::File) -> std::io::Result<bool> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt;
+        let (a, b) = (a.metadata()?, b.metadata()?);
+        Ok(a.dev() == b.dev() && a.ino() == b.ino())
+    }
+    #[cfg(windows)]
+    {
+        use pal::windows::fs::relative::file_identity;
+        let (a, b) = (file_identity(a)?, file_identity(b)?);
+        Ok(a.volume_serial_number == b.volume_serial_number && a.file_id == b.file_id)
+    }
 }
 
 /// Convert a `std::fs::File` to the platform-appropriate shared memory handle.
