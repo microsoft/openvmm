@@ -794,4 +794,197 @@ mod tests {
         drop(thread_driver);
         thread.join().unwrap();
     }
+
+    // Test: Start two grace periods with a reader entering between them.
+    // Expected: Only the second grace period waits for the newer reader.
+    #[async_test]
+    async fn concurrent_grace_periods_wait_for_their_own_readers(driver: DefaultDriver) {
+        define_rcu_domain!(test_rcu);
+
+        let (old_entered_send, old_entered_recv) = std::sync::mpsc::channel();
+        let (old_release_send, old_release_recv) = std::sync::mpsc::channel();
+        let old_reader = std::thread::spawn(move || {
+            test_rcu().run(|| {
+                old_entered_send.send(()).unwrap();
+                old_release_recv.recv().unwrap();
+            });
+        });
+        old_entered_recv
+            .recv_timeout(std::time::Duration::from_secs(5))
+            .unwrap();
+        let mut first = std::pin::pin!(sync(&driver, test_rcu()));
+        let mut cx = std::task::Context::from_waker(std::task::Waker::noop());
+        assert!(first.as_mut().poll(&mut cx).is_pending());
+
+        let (new_entered_send, new_entered_recv) = std::sync::mpsc::channel();
+        let (new_release_send, new_release_recv) = std::sync::mpsc::channel();
+        let new_reader = std::thread::spawn(move || {
+            test_rcu().run(|| {
+                new_entered_send.send(()).unwrap();
+                new_release_recv.recv().unwrap();
+            });
+        });
+        new_entered_recv
+            .recv_timeout(std::time::Duration::from_secs(5))
+            .unwrap();
+        let mut second = std::pin::pin!(sync(&driver, test_rcu()));
+        assert!(second.as_mut().poll(&mut cx).is_pending());
+
+        old_release_send.send(()).unwrap();
+        old_reader.join().unwrap();
+        assert!(first.as_mut().poll(&mut cx).is_ready());
+        assert!(second.as_mut().poll(&mut cx).is_pending());
+        new_release_send.send(()).unwrap();
+        new_reader.join().unwrap();
+        second.await;
+        sync(&driver, test_rcu()).await;
+    }
+
+    // Test: Release a read-side critical section while keeping its thread alive.
+    // Expected: Synchronization waits for section exit, not thread teardown,
+    //       remains pending beyond its first timeout while the reader is active,
+    //       and remains reusable after quiescence.
+    #[async_test]
+    async fn blocking_grace_period_waits_and_wakes_after_reader_exit(driver: DefaultDriver) {
+        define_rcu_domain!(test_rcu);
+
+        test_rcu().synchronize_blocking();
+        let (entered_send, entered_recv) = std::sync::mpsc::channel();
+        let (release_send, release_recv) = std::sync::mpsc::channel();
+        let (finish_reader_send, finish_reader_recv) = std::sync::mpsc::channel();
+        let reader = std::thread::spawn(move || {
+            test_rcu().run(|| {
+                entered_send.send(()).unwrap();
+                release_recv.recv().unwrap();
+            });
+            // Thread teardown must not provide the synchronizer's wakeup.
+            finish_reader_recv.recv().unwrap();
+        });
+        entered_recv
+            .recv_timeout(std::time::Duration::from_secs(5))
+            .unwrap();
+        let initial_seq = test_rcu().data.seq.load(Ordering::SeqCst);
+        let (finished_send, finished_recv) = std::sync::mpsc::channel();
+        let writer = std::thread::spawn(move || {
+            test_rcu().synchronize_blocking();
+            finished_send.send(()).unwrap();
+        });
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        let mut timer = PolledTimer::new(&driver);
+        while test_rcu().data.seq.load(Ordering::SeqCst) == initial_seq {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "writer did not enter synchronization"
+            );
+            timer.sleep(std::time::Duration::from_millis(1)).await;
+        }
+        assert_eq!(
+            finished_recv.recv_timeout(std::time::Duration::from_millis(50)),
+            Err(std::sync::mpsc::RecvTimeoutError::Timeout)
+        );
+        release_send.send(()).unwrap();
+        let finished = finished_recv.recv_timeout(std::time::Duration::from_secs(5));
+        finish_reader_send.send(()).unwrap();
+        reader.join().unwrap();
+        finished.unwrap();
+        writer.join().unwrap();
+        test_rcu().quiesce();
+        assert_eq!(
+            test_rcu().run(|| String::from("read after quiescence")),
+            "read after quiescence"
+        );
+        test_rcu().synchronize_blocking();
+    }
+
+    // Test: Expire a synchronization timeout while an older reader is active.
+    // Expected: Synchronization stays pending until that reader exits its
+    //       critical section, even if its thread remains alive.
+    #[test]
+    fn expired_timeout_does_not_complete_a_grace_period() {
+        define_rcu_domain!(test_rcu);
+
+        let (entered_send, entered_recv) = std::sync::mpsc::channel();
+        let (release_send, release_recv) = std::sync::mpsc::channel();
+        let (exited_send, exited_recv) = std::sync::mpsc::channel();
+        let (finish_send, finish_recv) = std::sync::mpsc::channel();
+        let reader = std::thread::spawn(move || {
+            test_rcu().run(|| {
+                entered_send.send(()).unwrap();
+                release_recv.recv().unwrap();
+            });
+            exited_send.send(()).unwrap();
+            finish_recv.recv().unwrap();
+        });
+        entered_recv
+            .recv_timeout(std::time::Duration::from_secs(5))
+            .unwrap();
+
+        let timeout_expired = std::cell::Cell::new(false);
+        let mut drain = std::pin::pin!(test_rcu().synchronize(async |_| {
+            std::future::poll_fn(|_| {
+                if timeout_expired.replace(false) {
+                    std::task::Poll::Ready(())
+                } else {
+                    std::task::Poll::Pending
+                }
+            })
+            .await;
+        }));
+        let mut cx = std::task::Context::from_waker(std::task::Waker::noop());
+        assert!(drain.as_mut().poll(&mut cx).is_pending());
+
+        timeout_expired.set(true);
+        assert!(drain.as_mut().poll(&mut cx).is_pending());
+
+        release_send.send(()).unwrap();
+        exited_recv
+            .recv_timeout(std::time::Duration::from_secs(5))
+            .unwrap();
+        let ready = drain.as_mut().poll(&mut cx).is_ready();
+        finish_send.send(()).unwrap();
+        reader.join().unwrap();
+        assert!(ready, "synchronization did not complete after reader exit");
+    }
+
+    // Test: Complete a newer grace period before polling an older waiter again.
+    // Expected: Both waiters complete after reader exit, without thread teardown.
+    #[test]
+    fn older_grace_period_completes_after_a_newer_one() {
+        define_rcu_domain!(test_rcu);
+
+        let (entered_send, entered_recv) = std::sync::mpsc::channel();
+        let (release_send, release_recv) = std::sync::mpsc::channel();
+        let (exited_send, exited_recv) = std::sync::mpsc::channel();
+        let (finish_send, finish_recv) = std::sync::mpsc::channel();
+        let reader = std::thread::spawn(move || {
+            test_rcu().run(|| {
+                entered_send.send(()).unwrap();
+                release_recv.recv().unwrap();
+            });
+            exited_send.send(()).unwrap();
+            finish_recv.recv().unwrap();
+        });
+        entered_recv
+            .recv_timeout(std::time::Duration::from_secs(5))
+            .unwrap();
+
+        let mut first =
+            std::pin::pin!(test_rcu().synchronize(async |_| std::future::pending().await));
+        let mut cx = std::task::Context::from_waker(std::task::Waker::noop());
+        assert!(first.as_mut().poll(&mut cx).is_pending());
+        let mut second =
+            std::pin::pin!(test_rcu().synchronize(async |_| std::future::pending().await));
+        assert!(second.as_mut().poll(&mut cx).is_pending());
+
+        release_send.send(()).unwrap();
+        exited_recv
+            .recv_timeout(std::time::Duration::from_secs(5))
+            .unwrap();
+        let second_ready = second.as_mut().poll(&mut cx).is_ready();
+        let first_ready = first.as_mut().poll(&mut cx).is_ready();
+        finish_send.send(()).unwrap();
+        reader.join().unwrap();
+        assert!(second_ready, "newer synchronization did not complete");
+        assert!(first_ready, "older synchronization lost reader progress");
+    }
 }
