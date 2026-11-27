@@ -206,3 +206,6 @@ impl Inspect for TdispTdiState {
         req.value(format!("{}", self));
     }
 }
+
+#[cfg(test)]
+mod tests;
