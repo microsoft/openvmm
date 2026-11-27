@@ -39,8 +39,11 @@ use std::io;
 use std::os::unix::prelude::*;
 use std::pin::pin;
 use std::sync::Arc;
+use std::sync::atomic::AtomicBool;
+use std::sync::atomic::Ordering;
 use std::task::Context;
 use std::task::Poll;
+use std::time::Duration;
 
 /// An single-threaded task pool backed by epoll.
 pub type EpollPool = IoPool<EpollBackend>;
@@ -241,15 +244,10 @@ impl IoBackend for EpollBackend {
                             unsafe { uring_thread_state.set_ring(uring) }.flush();
                         }
 
-                        let timeout = deadline
-                            .map(|deadline| {
-                                let now = Instant::now();
-                                (deadline.max(now) - now)
-                                    .as_millis()
-                                    .try_into()
-                                    .unwrap_or(i32::MAX)
-                            })
-                            .unwrap_or(-1);
+                        let timeout = deadline.map(|deadline| {
+                            let now = Instant::now();
+                            deadline.max(now) - now
+                        });
 
                         let mut events = [libc::epoll_event { events: 0, u64: 0 }; 8];
                         let n = while_eintr(|| self.epfd.wait(&mut events, timeout))
@@ -292,6 +290,9 @@ impl IoBackend for EpollBackend {
 #[derive(Debug)]
 struct EpollFd(File);
 
+// Miri only supports epoll_wait.
+static USE_EPOLL_PWAIT2: AtomicBool = AtomicBool::new(!cfg!(miri));
+
 impl EpollFd {
     fn new() -> Result<Self, Errno> {
         // SAFETY: epoll_create1 creates a new, uniquely owned fd.
@@ -328,8 +329,44 @@ impl EpollFd {
         Ok(())
     }
 
-    fn wait(&self, events: &mut [libc::epoll_event], timeout: i32) -> Result<usize, Errno> {
+    fn wait(
+        &self,
+        events: &mut [libc::epoll_event],
+        timeout: Option<Duration>,
+    ) -> Result<usize, Errno> {
         let maxevents = events.len() as i32;
+        if USE_EPOLL_PWAIT2.load(Ordering::Relaxed) {
+            let timeout = timeout.map(|timeout| libc::timespec {
+                tv_sec: timeout.as_secs().try_into().unwrap_or(i64::MAX),
+                tv_nsec: timeout.subsec_nanos().into(),
+            });
+            // SAFETY: maxevents matches the writable events slice, timeout points
+            // to a valid timespec (or is null), and no signal mask is supplied.
+            // Use the syscall directly to avoid requiring glibc 2.35.
+            let result = unsafe {
+                libc::syscall(
+                    libc::SYS_epoll_pwait2,
+                    self.0.as_raw_fd(),
+                    events.as_mut_ptr(),
+                    maxevents,
+                    timeout.as_ref().map_or(std::ptr::null(), std::ptr::from_ref),
+                    std::ptr::null::<libc::sigset_t>(),
+                    0usize,
+                ) as isize
+            }
+            .syscall_result();
+            match result {
+                Ok(n) => return Ok(n as usize),
+                Err(Errno(libc::ENOSYS)) => {
+                    USE_EPOLL_PWAIT2.store(false, Ordering::Relaxed);
+                }
+                Err(err) => return Err(err),
+            }
+        }
+
+        let timeout = timeout
+            .map(|timeout| timeout.as_millis().try_into().unwrap_or(i32::MAX))
+            .unwrap_or(-1);
         // SAFETY: maxevents is set appropriately to write to the events slice.
         let n = unsafe {
             libc::epoll_wait(self.0.as_raw_fd(), events.as_mut_ptr(), maxevents, timeout)
@@ -519,8 +556,131 @@ impl PollTimer for Timer {
 
 #[cfg(test)]
 mod tests {
+    use super::EpollFd;
     use super::EpollPool;
     use crate::executor_tests;
+    use pal_event::Event;
+    use std::os::unix::prelude::*;
+    use std::time::Duration;
+    use test_with_tracing::test;
+
+    #[test]
+    #[cfg(not(miri))]
+    fn submillisecond_timeout() {
+        let epfd = EpollFd::new().unwrap();
+        let mut events = [libc::epoll_event { events: 0, u64: 0 }; 1];
+        let timeout = Duration::from_micros(250);
+        let start = std::time::Instant::now();
+        assert_eq!(epfd.wait(&mut events, Some(timeout)).unwrap(), 0);
+        let elapsed = start.elapsed();
+        if super::USE_EPOLL_PWAIT2.load(std::sync::atomic::Ordering::Relaxed) {
+            assert!(elapsed >= timeout);
+        } else {
+            println!("Submillisecond timeout assertion skipped (no epoll_pwait2 support)");
+        }
+    }
+
+    #[test]
+    fn wait_timeout_modes() {
+        let epfd = EpollFd::new().unwrap();
+        let event = Event::new();
+        epfd.add(event.as_fd().as_raw_fd(), libc::EPOLLIN, 42)
+            .unwrap();
+        let mut events = [libc::epoll_event { events: 0, u64: 0 }; 1];
+        assert_eq!(epfd.wait(&mut events, Some(Duration::ZERO)).unwrap(), 0);
+        event.signal();
+        assert_eq!(epfd.wait(&mut events, None).unwrap(), 1);
+        let context = events[0].u64;
+        assert_eq!(context, 42);
+    }
+
+    #[cfg(not(miri))]
+    fn deny_epoll_pwait2(errno: i32) {
+        use pal::unix::SyscallResult;
+
+        let filter = [
+            libc::sock_filter {
+                code: (libc::BPF_LD | libc::BPF_W | libc::BPF_ABS) as u16,
+                jt: 0,
+                jf: 0,
+                k: 0, // seccomp_data.nr.
+            },
+            libc::sock_filter {
+                code: (libc::BPF_JMP | libc::BPF_JEQ | libc::BPF_K) as u16,
+                jt: 0,
+                jf: 1,
+                k: libc::SYS_epoll_pwait2 as u32,
+            },
+            libc::sock_filter {
+                code: (libc::BPF_RET | libc::BPF_K) as u16,
+                jt: 0,
+                jf: 0,
+                k: libc::SECCOMP_RET_ERRNO | errno as u32,
+            },
+            libc::sock_filter {
+                code: (libc::BPF_RET | libc::BPF_K) as u16,
+                jt: 0,
+                jf: 0,
+                k: libc::SECCOMP_RET_ALLOW,
+            },
+        ];
+        let program = libc::sock_fprog {
+            len: filter.len() as u16,
+            filter: filter.as_ptr().cast_mut(),
+        };
+        // SAFETY: Install a valid filter on this child thread only, allowing all
+        // syscalls except epoll_pwait2, which returns the selected errno.
+        unsafe {
+            libc::prctl(libc::PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0)
+                .syscall_result()
+                .unwrap();
+            libc::prctl(libc::PR_SET_SECCOMP, libc::SECCOMP_MODE_FILTER, &program)
+                .syscall_result()
+                .unwrap();
+        }
+    }
+
+    #[test]
+    #[cfg(not(miri))]
+    fn epoll_pwait2_fallback() {
+        use pal::unix::Errno;
+
+        const CHILD_ERRNO: &str = "PAL_ASYNC_TEST_EPOLL_PWAIT2_ERRNO";
+        if let Some(errno) = std::env::var_os(CHILD_ERRNO) {
+            let errno: i32 = errno.to_str().unwrap().parse().unwrap();
+            deny_epoll_pwait2(errno);
+            let epfd = EpollFd::new().unwrap();
+            let mut events = [libc::epoll_event { events: 0, u64: 0 }; 1];
+            if errno == libc::ENOSYS {
+                assert_eq!(epfd.wait(&mut events, Some(Duration::ZERO)).unwrap(), 0);
+                // A subsequent probe would now return EPERM, not ENOSYS.
+                deny_epoll_pwait2(libc::EPERM);
+                wait_timeout_modes();
+                EpollPool::run_with(executor_tests::sleep_tests);
+            } else {
+                for _ in 0..2 {
+                    assert_eq!(
+                        epfd.wait(&mut events, Some(Duration::ZERO)),
+                        Err(Errno(errno))
+                    );
+                }
+            }
+            return;
+        }
+
+        for errno in [libc::ENOSYS, libc::EPERM] {
+            let status = std::process::Command::new(std::env::current_exe().unwrap())
+                .args([
+                    "--exact",
+                    "sys::epoll::tests::epoll_pwait2_fallback",
+                    "--nocapture",
+                ])
+                .env(CHILD_ERRNO, errno.to_string())
+                .status()
+                .unwrap();
+            assert!(status.success(), "epoll_pwait2 errno {errno}: {status}");
+        }
+    }
 
     #[test]
     fn waker_works() {
