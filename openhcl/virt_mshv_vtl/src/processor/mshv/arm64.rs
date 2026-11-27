@@ -257,8 +257,6 @@ impl BackingPrivate for HypervisorBackedArm64 {
         Ok(())
     }
 
-    fn poll_apic(_this: &mut UhProcessor<'_, Self>, _vtl: GuestVtl, _scan_irr: bool) {}
-
     fn process_interrupts(
         _this: &mut UhProcessor<'_, Self>,
         _scan_irr: hv1_structs::VtlArray<bool, 2>,
@@ -266,6 +264,13 @@ impl BackingPrivate for HypervisorBackedArm64 {
         _dev: &impl CpuIo,
     ) -> bool {
         false
+    }
+
+    fn poll_interrupt_controller(
+        _this: &mut UhProcessor<'_, Self>,
+        _vtl: GuestVtl,
+        _scan_irr: bool,
+    ) {
     }
 
     fn request_extint_readiness(this: &mut UhProcessor<'_, Self>) {
