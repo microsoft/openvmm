@@ -132,6 +132,22 @@ impl<'a, T: DeviceBacking> BnicDriver<'a, T> {
             wq_type,
             wq_obj: resp.wq_obj,
         });
+        // The request succeeded, and WQ resources have been moved to the arena.
+        // The caller should make a best-effort attempt to cleanup.
+        if let Err(err) = validate_create_wq_response(&resp, wq_type) {
+            tracelimit::error_ratelimited!(
+                error = &err as &dyn std::error::Error,
+                cq_id = resp.cq_id,
+                wq_id = resp.wq_id,
+                wq_obj = resp.wq_obj,
+                dev_type = self.dev_id.ty.0,
+                dev_instance = self.dev_id.instance,
+                vport,
+                wq_type = wq_type.0,
+                "MANA create WQ response validation failed"
+            );
+            return Err(err.into());
+        }
         Ok(resp)
     }
 
@@ -307,4 +323,137 @@ pub struct WqConfig {
     pub cq_size: u32,
     pub cq_moderation_ctx_id: u32,
     pub eq_id: u32,
+}
+
+#[derive(Debug, thiserror::Error, PartialEq, Eq)]
+enum CreateWqResponseValidationError {
+    #[error("MANA create WQ returned an invalid WQ object handle")]
+    InvalidWqObjectHandle,
+    #[error("MANA create WQ used an unsupported queue type {wq_type:?}")]
+    InvalidWqType { wq_type: GdmaQueueType },
+    #[error("MANA create WQ returned an out-of-range queue ID, cq_id={cq_id:#x}, wq_id={wq_id:#x}")]
+    QueueIdOutOfRange { cq_id: u32, wq_id: u32 },
+}
+
+fn validate_create_wq_response(
+    resp: &ManaCreateWqobjResp,
+    wq_type: GdmaQueueType,
+) -> Result<(), CreateWqResponseValidationError> {
+    if resp.wq_obj == u64::MAX {
+        return Err(CreateWqResponseValidationError::InvalidWqObjectHandle);
+    }
+    if !matches!(wq_type, GdmaQueueType::GDMA_SQ | GdmaQueueType::GDMA_RQ) {
+        return Err(CreateWqResponseValidationError::InvalidWqType { wq_type });
+    }
+    // Resource counts are allocation limits, not bounds on queue IDs.
+    if resp.cq_id > 0x00ff_ffff || resp.wq_id > 0x00ff_ffff {
+        return Err(CreateWqResponseValidationError::QueueIdOutOfRange {
+            cq_id: resp.cq_id,
+            wq_id: resp.wq_id,
+        });
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use CreateWqResponseValidationError::InvalidWqObjectHandle;
+    use CreateWqResponseValidationError::QueueIdOutOfRange;
+    use test_with_tracing::test;
+
+    fn check_create_wq_response(
+        wq_id: u32,
+        cq_id: u32,
+        wq_obj: u64,
+        expected: Result<(), CreateWqResponseValidationError>,
+    ) {
+        let resp = ManaCreateWqobjResp {
+            wq_id,
+            cq_id,
+            wq_obj,
+        };
+
+        assert_eq!(
+            validate_create_wq_response(&resp, GdmaQueueType::GDMA_SQ),
+            expected
+        );
+    }
+
+    #[test]
+    fn test_create_wq_response_zero_valid() {
+        check_create_wq_response(0, 0, 0, Ok(()));
+    }
+
+    #[test]
+    fn test_create_wq_response_max_valid() {
+        check_create_wq_response(0x00ff_ffff, 0x00ff_ffff, 0, Ok(()));
+    }
+
+    #[test]
+    fn test_create_wq_response_first_invalid_cq() {
+        check_create_wq_response(
+            0,
+            0x0100_0000,
+            0,
+            Err(QueueIdOutOfRange {
+                cq_id: 0x0100_0000,
+                wq_id: 0,
+            }),
+        );
+    }
+
+    #[test]
+    fn test_create_wq_response_first_invalid_wq() {
+        check_create_wq_response(
+            0x0100_0000,
+            0,
+            0,
+            Err(QueueIdOutOfRange {
+                cq_id: 0,
+                wq_id: 0x0100_0000,
+            }),
+        );
+    }
+
+    #[test]
+    fn test_create_wq_response_last_valid_handle() {
+        check_create_wq_response(0, 0, u64::MAX - 1, Ok(()));
+    }
+
+    #[test]
+    fn test_create_wq_response_invalid_handle_rejected() {
+        check_create_wq_response(0, 0, u64::MAX, Err(InvalidWqObjectHandle));
+    }
+
+    #[test]
+    fn test_create_wq_response_offset_ids_valid() {
+        // The emulator allocates SQ/RQ IDs 24..=87 and CQ IDs 24..=151,
+        // despite advertising capacities of 64 SQs/RQs and 128 CQs.
+        for wq_type in [GdmaQueueType::GDMA_SQ, GdmaQueueType::GDMA_RQ] {
+            for (wq_id, cq_id) in [(64, 24), (24, 128), (87, 151)] {
+                let resp = ManaCreateWqobjResp {
+                    wq_id,
+                    cq_id,
+                    wq_obj: 0,
+                };
+                assert_eq!(validate_create_wq_response(&resp, wq_type), Ok(()));
+            }
+        }
+    }
+
+    #[test]
+    fn test_create_wq_response_invalid_queue_type_rejected() {
+        let resp = ManaCreateWqobjResp {
+            wq_id: 0,
+            cq_id: 0,
+            wq_obj: 0,
+        };
+        assert_eq!(
+            validate_create_wq_response(&resp, GdmaQueueType::GDMA_CQ),
+            Err(CreateWqResponseValidationError::InvalidWqType {
+                wq_type: GdmaQueueType::GDMA_CQ,
+            }),
+        );
+    }
 }
