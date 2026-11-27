@@ -165,16 +165,6 @@ impl virt::Hypervisor for LinuxMshv {
         vmfd.initialize()
             .map_err(|e| ErrorInner::CreateVMInitFailed(e.into()))?;
 
-        // Guest hypervisors probe architectural MSRs that L0 may not virtualize.
-        if config.nested_virt {
-            vmfd.set_partition_property(
-                HvPartitionPropertyCode::UnimplementedMsrAction.0,
-                mshv_bindings::hv_unimplemented_msr_action_HV_UNIMPLEMENTED_MSR_ACTION_IGNORE_WRITE_READ_ZERO
-                    as u64,
-            )
-            .map_err(|e| ErrorInner::SetPartitionProperty(e.into()))?;
-        }
-
         if snp {
             let snp_policy = igvm_snp_config.as_ref().map_or_else(
                 || {
@@ -194,16 +184,19 @@ impl virt::Hypervisor for LinuxMshv {
                     HvPartitionPropertyCode::SevVmgexitOffloads,
                     vmgexit_offloads,
                 ),
-                (
-                    HvPartitionPropertyCode::UnimplementedMsrAction,
-                    mshv_bindings::hv_unimplemented_msr_action_HV_UNIMPLEMENTED_MSR_ACTION_IGNORE_WRITE_READ_ZERO
-                        as u64,
-                ),
             ] {
                 vmfd.set_partition_property(code.0, value)
                     .map_err(|e| ErrorInner::SetPartitionProperty(e.into()))?;
             }
         }
+
+        // Ordinary guests can also probe optional MSRs that the hypervisor does not implement.
+        vmfd.set_partition_property(
+            HvPartitionPropertyCode::UnimplementedMsrAction.0,
+            mshv_bindings::hv_unimplemented_msr_action_HV_UNIMPLEMENTED_MSR_ACTION_IGNORE_WRITE_READ_ZERO
+                as u64,
+        )
+        .map_err(|e| ErrorInner::SetPartitionProperty(e.into()))?;
 
         vmfd.set_partition_property(HvPartitionPropertyCode::TimeFreeze.0, 1)
             .map_err(|e| ErrorInner::SetPartitionProperty(e.into()))?;
