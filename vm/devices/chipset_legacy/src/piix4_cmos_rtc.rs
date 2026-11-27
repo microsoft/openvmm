@@ -71,7 +71,9 @@ impl Piix4CmosRtc {
 impl ChangeDeviceState for Piix4CmosRtc {
     fn start(&mut self) {}
 
-    async fn stop(&mut self) {}
+    async fn stop(&mut self) {
+        self.inner.stop().await;
+    }
 
     async fn reset(&mut self) {
         self.inner.reset().await;
@@ -202,9 +204,26 @@ mod save_restore {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use local_clock::LocalClock;
+    use local_clock::LocalClockTime;
+    use local_clock::LocalClockTimeFuture;
     use local_clock::MockLocalClock;
+    use std::future::Future;
+    use std::task::Context;
+    use std::task::Poll;
+    use std::task::Waker;
 
     fn new_test_rtc() -> (
+        pal_async::DefaultPool,
+        vmcore::vmtime::VmTimeKeeper,
+        Piix4CmosRtc,
+    ) {
+        new_test_rtc_with(Box::new(MockLocalClock::new()))
+    }
+
+    fn new_test_rtc_with(
+        clock: Box<dyn InspectableLocalClock>,
+    ) -> (
         pal_async::DefaultPool,
         vmcore::vmtime::VmTimeKeeper,
         Piix4CmosRtc,
@@ -218,7 +237,7 @@ mod tests {
             .unwrap();
 
         let rtc = Piix4CmosRtc::new(
-            Box::new(MockLocalClock::new()),
+            clock,
             LineInterrupt::detached(),
             &vm_time_source,
             None,
@@ -226,6 +245,54 @@ mod tests {
         );
 
         (pool, vm_time_keeper, rtc)
+    }
+
+    /// A clock whose time is only available once the test sends it.
+    #[derive(Inspect)]
+    struct WaitingClock {
+        #[inspect(skip)]
+        time: Option<mesh::OneshotReceiver<LocalClockTime>>,
+    }
+
+    impl LocalClock for WaitingClock {
+        fn get_time(&mut self) -> LocalClockTime {
+            unreachable!("the time is waited for")
+        }
+
+        fn get_time_or_wait(&mut self) -> Result<LocalClockTime, LocalClockTimeFuture> {
+            let time = self.time.take().expect("one read");
+            Err(Box::pin(async move { time.await.unwrap() }))
+        }
+
+        fn set_time(&mut self, _new_time: LocalClockTime) {}
+    }
+
+    #[test]
+    fn stop_completes_deferred_read() {
+        let (send, recv) = mesh::oneshot();
+        let (mut pool, _vm_time_keeper, mut rtc) =
+            new_test_rtc_with(Box::new(WaitingClock { time: Some(recv) }));
+        rtc.poll_device(&mut Context::from_waker(Waker::noop()));
+        rtc.io_write(Piix4CmosRtcIoPort::ADDRESS.0, &[0]).unwrap();
+        let IoResult::Defer(mut token) = rtc.io_read(Piix4CmosRtcIoPort::DATA.0, &mut [0]) else {
+            panic!("read not deferred");
+        };
+
+        // Stopping waits for the read, and completes it.
+        let mut stop = std::pin::pin!(rtc.stop());
+        assert!(
+            stop.as_mut()
+                .poll(&mut Context::from_waker(Waker::noop()))
+                .is_pending()
+        );
+        send.send(LocalClockTime::from_millis_since_unix_epoch(30_000));
+        pool.run_until(stop);
+        let mut data = [0];
+        assert!(matches!(
+            token.poll_read(&mut Context::from_waker(Waker::noop()), &mut data),
+            Poll::Ready(Ok(()))
+        ));
+        assert_eq!(data, [0x30]);
     }
 
     fn get_cmos_data(rtc: &mut Piix4CmosRtc, addr: u8) -> u8 {
