@@ -1,6 +1,7 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
+use super::test_helpers::TeeMsi;
 use super::test_helpers::TestNvmeMmioRegistration;
 use crate::AddNamespaceError;
 use crate::BAR0_LEN;
@@ -29,6 +30,7 @@ use pci_core::bus_range::AssignedBusRange;
 use pci_core::dma::DmaTarget;
 use pci_core::msi::MsiConnection;
 use pci_core::test_helpers::TestPciInterruptController;
+use std::sync::Arc;
 use user_driver::backoff::Backoff;
 use vmcore::vm_task::SingleDriverBackend;
 use vmcore::vm_task::VmTaskDriverSource;
@@ -39,6 +41,7 @@ fn instantiate_controller(
     driver: DefaultDriver,
     gm: &GuestMemory,
     int_controller: Option<&TestPciInterruptController>,
+    tap: Option<mesh::Sender<(u64, u32)>>,
 ) -> NvmeController {
     let mut mmio_reg = TestNvmeMmioRegistration {};
     let vm_task_driver = &VmTaskDriverSource::new(SingleDriverBackend::new(driver));
@@ -56,12 +59,16 @@ fn instantiate_controller(
     );
 
     if let Some(intc) = int_controller {
-        msi_conn.connect(intc.signal_msi());
+        let signal = intc.signal_msi();
+        match tap {
+            Some(tap) => msi_conn.connect(Arc::new(TeeMsi { inner: signal, tap })),
+            None => msi_conn.connect(signal),
+        }
     }
     controller
 }
 
-fn write_msix_table_entry(
+pub(super) fn write_msix_table_entry(
     controller: &mut NvmeController,
     table_index: u16,
     address: u64,
@@ -118,7 +125,58 @@ pub async fn instantiate_and_build_admin_queue(
     driver: DefaultDriver,
     gm: &GuestMemory,
 ) -> NvmeController {
-    let mut nvmec = instantiate_controller(driver.clone(), gm, int_controller);
+    build_admin_queue_inner(
+        acq_buffer,
+        acq_entries,
+        asq_buffer,
+        asq_entries,
+        trigger_interrupt,
+        int_controller,
+        driver,
+        gm,
+        None,
+    )
+    .await
+}
+
+/// Like [`instantiate_and_build_admin_queue`] with the admin interrupt
+/// enabled, also sending every MSI to `tap`.
+pub(super) async fn instantiate_and_build_admin_queue_tapped(
+    acq_buffer: &PrpRange,
+    acq_entries: u32,
+    asq_buffer: &PrpRange,
+    asq_entries: u32,
+    int_controller: &TestPciInterruptController,
+    driver: DefaultDriver,
+    gm: &GuestMemory,
+    tap: mesh::Sender<(u64, u32)>,
+) -> NvmeController {
+    build_admin_queue_inner(
+        acq_buffer,
+        acq_entries,
+        asq_buffer,
+        asq_entries,
+        true,
+        Some(int_controller),
+        driver,
+        gm,
+        Some(tap),
+    )
+    .await
+}
+
+async fn build_admin_queue_inner(
+    acq_buffer: &PrpRange,
+    acq_entries: u32,
+    asq_buffer: &PrpRange,
+    asq_entries: u32,
+    trigger_interrupt: bool,
+    int_controller: Option<&TestPciInterruptController>,
+    driver: DefaultDriver,
+    gm: &GuestMemory,
+    tap: Option<mesh::Sender<(u64, u32)>>,
+) -> NvmeController {
+    let mut nvmec = instantiate_controller(driver.clone(), gm, int_controller, tap);
     // Set the BARs.
     nvmec
         .pci_cfg_write(0x10, ByteEnabledDwordWrite::with_all_bytes_enabled(0))
@@ -231,7 +289,7 @@ pub async fn instantiate_and_build_admin_queue(
 #[async_test]
 async fn test_basic_registers(driver: DefaultDriver) {
     let gm = test_memory();
-    let mut nvmec = instantiate_controller(driver, &gm, None);
+    let mut nvmec = instantiate_controller(driver, &gm, None, None);
     let mut dword = 0u32;
 
     // Read controller caps, version.
@@ -255,7 +313,7 @@ async fn test_basic_registers(driver: DefaultDriver) {
 #[async_test]
 async fn test_invalid_configuration(driver: DefaultDriver) {
     let gm = test_memory();
-    let mut nvmec = instantiate_controller(driver, &gm, None);
+    let mut nvmec = instantiate_controller(driver, &gm, None, None);
     let mut dword = 0u32;
     nvmec.read_bar0(0x14, dword.as_mut_bytes()).unwrap();
     // Set MPS to some disallowed value
@@ -269,7 +327,7 @@ async fn test_invalid_configuration(driver: DefaultDriver) {
 #[async_test]
 async fn test_enable_controller(driver: DefaultDriver) {
     let gm = test_memory();
-    let mut nvmec = instantiate_controller(driver, &gm, None);
+    let mut nvmec = instantiate_controller(driver, &gm, None, None);
 
     // Set the ACQ base to 0x1000 and the ASQ base to 0x2000.
     let mut qword = 0x1000;
@@ -296,7 +354,7 @@ async fn test_enable_controller(driver: DefaultDriver) {
 #[async_test]
 async fn test_multi_page_admin_queues(driver: DefaultDriver) {
     let gm = test_memory();
-    let mut nvmec = instantiate_controller(driver, &gm, None);
+    let mut nvmec = instantiate_controller(driver, &gm, None, None);
 
     // Set the ACQ base to 0x1000 and the ASQ base to 0x3000.
     let mut qword = 0x1000;
@@ -387,7 +445,7 @@ async fn test_send_identify(driver: DefaultDriver) {
 /// to it via admin commands, draining the admin completions as it goes.
 /// Returns the next free admin slot.
 #[expect(clippy::too_many_arguments)]
-async fn create_io_queue_pair(
+pub(super) async fn create_io_queue_pair(
     nvmec: &mut NvmeController,
     gm: &GuestMemory,
     admin_cq_buf: &PrpRange,
@@ -461,7 +519,7 @@ async fn create_io_queue_pair(
 
 /// Doorbell offset for SQ `qid`. NVMe doorbell stride is 4 bytes and the
 /// admin SQ is at offset `0x1000`; SQ `qid` is at `0x1000 + (2*qid)*4`.
-const fn sq_db(qid: u16) -> u64 {
+pub(super) const fn sq_db(qid: u16) -> u64 {
     0x1000 + (2 * qid as u64) * 4
 }
 
@@ -1188,7 +1246,7 @@ async fn test_async_event_config_masks_namespace_aen(driver: DefaultDriver) {
 #[async_test]
 async fn test_add_namespace_validation(driver: DefaultDriver) {
     let gm = test_memory();
-    let nvmec = instantiate_controller(driver, &gm, None);
+    let nvmec = instantiate_controller(driver, &gm, None, None);
     let client = nvmec.client();
 
     // NSID 0 is reserved and must be rejected as out of range.

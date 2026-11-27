@@ -431,9 +431,24 @@ impl NvmeController {
 }
 
 impl ChangeDeviceState for NvmeController {
-    fn start(&mut self) {}
+    fn start(&mut self) {
+        self.workers.start();
+    }
 
-    async fn stop(&mut self) {}
+    async fn stop(&mut self) {
+        // Finish a pending enable so CSTS.RDY is current while stopped. Nothing
+        // reads it before `start` today, but a save of the device state will:
+        // it should not have to describe a half-done enable. The coordinator
+        // handles the enable before the stop below, so this adds no wait. A
+        // pending controller reset is not finished here, since its
+        // drain waits for in-flight I/O; the workers' stop pauses it until
+        // `start`.
+        if self.registers.cc.en() && !self.registers.csts.rdy() {
+            self.workers.wait_enabled().await;
+            self.registers.csts.set_rdy(true);
+        }
+        self.workers.stop().await;
+    }
 
     async fn reset(&mut self) {
         let Self {
