@@ -518,6 +518,7 @@ impl PetriVmInner {
                         }
                     },
                     force: false,
+                    message: Default::default(),
                 },
             )
             .await?;

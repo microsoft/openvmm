@@ -211,6 +211,15 @@ impl<M: RingMem + Unpin> ShutdownChannel<M> {
                         return Ok(());
                     }
 
+                    let mut text = [0; 2048];
+                    for (bytes, unit) in text
+                        .as_chunks_mut::<2>()
+                        .0
+                        .iter_mut()
+                        .zip(params.message.as_utf16())
+                    {
+                        bytes.copy_from_slice(&unit.to_le_bytes());
+                    }
                     let mut flags =
                         hyperv_ic_protocol::shutdown::ShutdownFlags::new().with_force(params.force);
                     match params.shutdown_type {
@@ -223,7 +232,7 @@ impl<M: RingMem + Unpin> ShutdownChannel<M> {
                         reason_code: hyperv_ic_protocol::shutdown::SHTDN_REASON_FLAG_PLANNED,
                         timeout_secs: 0,
                         flags,
-                        message: [0; 2048],
+                        message: text,
                     });
 
                     self.pipe
@@ -322,6 +331,7 @@ mod save_restore {
 
     pub mod state {
         use hyperv_ic_protocol;
+        use hyperv_ic_resources::shutdown::ShutdownText;
         use mesh::payload::Protobuf;
         use vmcore::save_restore::SavedStateRoot;
 
@@ -352,13 +362,15 @@ mod save_restore {
             }
         }
 
-        #[derive(Copy, Clone, Eq, PartialEq, Protobuf)]
+        #[derive(Clone, Eq, PartialEq, Protobuf)]
         #[mesh(package = "shutdown_ic")]
         pub struct ShutdownParams {
             #[mesh(1)]
             pub shutdown_type: ShutdownType,
             #[mesh(2)]
             pub force: bool,
+            #[mesh(3)]
+            pub message: ShutdownText,
         }
 
         impl From<&hyperv_ic_resources::shutdown::ShutdownParams> for ShutdownParams {
@@ -373,6 +385,7 @@ mod save_restore {
                 Self {
                     shutdown_type,
                     force: params.force,
+                    message: params.message.clone(),
                 }
             }
         }
@@ -389,6 +402,7 @@ mod save_restore {
                 Self {
                     shutdown_type,
                     force: params.force,
+                    message: params.message.clone(),
                 }
             }
         }
@@ -502,6 +516,7 @@ mod tests {
     use hyperv_ic_protocol::Header;
     use hyperv_ic_protocol::HeaderFlags;
     use hyperv_ic_protocol::MessageType;
+    use hyperv_ic_resources::shutdown::ShutdownText;
     use mesh::rpc::RpcSend;
     use pal_async::DefaultDriver;
     use pal_async::async_test;
@@ -582,6 +597,11 @@ mod tests {
             assert!(task.start());
 
             for force in [false, true] {
+                let text = if force {
+                    String::new()
+                } else {
+                    "\u{1f680}".repeat(511) + "a"
+                };
                 for (shutdown_type, supported) in [
                     (ShutdownType::Reboot, reboot_supported),
                     (ShutdownType::Hibernate, hibernate_supported),
@@ -594,6 +614,7 @@ mod tests {
                         ShutdownParams {
                             shutdown_type,
                             force,
+                            message: ShutdownText::new(&text).unwrap(),
                         },
                     );
                     let mut buffer = [0; hyperv_ic_protocol::MAX_MESSAGE_SIZE];
@@ -615,6 +636,14 @@ mod tests {
                         assert_eq!(message.flags.force(), force);
                         assert_eq!(message.flags.restart(), restart);
                         assert_eq!(message.flags.hibernate(), hibernate);
+                        let expected: Vec<u8> =
+                            text.encode_utf16().flat_map(u16::to_le_bytes).collect();
+                        assert_eq!(&message.message[..expected.len()], expected);
+                        assert!(
+                            message.message[expected.len()..]
+                                .iter()
+                                .all(|byte| *byte == 0)
+                        );
                         let mut ack = response();
                         ack.framework_version = versions.framework_version;
                         ack.message_version = message_version;
@@ -677,6 +706,7 @@ mod tests {
                 ShutdownParams {
                     shutdown_type: ShutdownType::PowerOff,
                     force: false,
+                    message: ShutdownText::default(),
                 },
             );
             let mut buffer = [0; hyperv_ic_protocol::MAX_MESSAGE_SIZE];
@@ -829,6 +859,7 @@ mod tests {
                 ShutdownParams {
                     shutdown_type: ShutdownType::PowerOff,
                     force: false,
+                    message: ShutdownText::default(),
                 },
             );
             let mut buffer = [0; hyperv_ic_protocol::MAX_MESSAGE_SIZE];
@@ -847,6 +878,7 @@ mod tests {
                         ShutdownParams {
                             shutdown_type: ShutdownType::Reboot,
                             force: true,
+                            message: ShutdownText::default(),
                         },
                     ),
                 )
@@ -893,6 +925,7 @@ mod tests {
                 ShutdownParams {
                     shutdown_type: ShutdownType::PowerOff,
                     force: false,
+                    message: ShutdownText::default(),
                 },
             );
             assert!(task.start());
@@ -1000,6 +1033,7 @@ mod tests {
                 *state = ReadyState::SendShutdown(ShutdownParams {
                     shutdown_type: ShutdownType::PowerOff,
                     force: false,
+                    message: ShutdownText::default(),
                 });
                 with_timeout(&driver, restored.process_state_machine(&mut Vec::new()))
                     .await
@@ -1057,6 +1091,90 @@ mod tests {
                 ..
             }
         ));
+    }
+
+    #[test]
+    fn shutdown_text_serialization_compatibility() {
+        #[derive(mesh::payload::Protobuf)]
+        #[mesh(package = "shutdown_ic")]
+        struct LegacySavedParams {
+            #[mesh(1)]
+            shutdown_type: save_restore::state::ShutdownType,
+            #[mesh(2)]
+            force: bool,
+        }
+        let legacy = mesh::payload::encode(LegacySavedParams {
+            shutdown_type: save_restore::state::ShutdownType::PowerOff,
+            force: true,
+        });
+        let decoded: save_restore::state::ShutdownParams = mesh::payload::decode(&legacy).unwrap();
+        assert_eq!(decoded.message, ShutdownText::default());
+        assert!(decoded.force);
+        for message in [String::new(), "maintenance \u{1f680}".to_owned()] {
+            let params = ShutdownParams {
+                shutdown_type: ShutdownType::Reboot,
+                force: true,
+                message: ShutdownText::new(&message).unwrap(),
+            };
+            let saved = save_restore::state::ShutdownParams::from(&params);
+            let saved: save_restore::state::ShutdownParams =
+                mesh::payload::decode(&mesh::payload::encode(saved)).unwrap();
+            let restored = ShutdownParams::from(saved);
+            assert_eq!(restored.message.to_string(), message);
+            assert!(restored.force);
+            assert!(matches!(restored.shutdown_type, ShutdownType::Reboot));
+            let (_send, recv) = mesh::channel();
+            let mut ic = ShutdownIc::new(recv);
+            let (host, _guest) = save_restore_channels();
+            let channel = ShutdownChannel::new(
+                host,
+                Some(ChannelState::Ready {
+                    versions: Versions {
+                        framework_version: hyperv_ic_protocol::FRAMEWORK_VERSION_3,
+                        message_version: SHUTDOWN_VERSION_3_1,
+                    },
+                    state: ReadyState::SendShutdown(params),
+                    clients: Vec::new(),
+                }),
+            )
+            .unwrap();
+            let saved =
+                mesh::payload::decode(&mesh::payload::encode(ic.save_open(&channel))).unwrap();
+            let (host, _guest) = save_restore_channels();
+            let restored = ic.restore_open(saved, host).unwrap();
+            match restored.state {
+                ChannelState::Ready {
+                    state: ReadyState::SendShutdown(params),
+                    ..
+                } => {
+                    assert_eq!(params.message.to_string(), message);
+                }
+                _ => panic!("unsent shutdown was not restored"),
+            }
+        }
+    }
+
+    #[test]
+    fn shutdown_saved_text_rejects_invalid_values() {
+        #[derive(mesh::payload::Protobuf)]
+        struct PreviousSavedParams {
+            #[mesh(1)]
+            shutdown_type: save_restore::state::ShutdownType,
+            #[mesh(2)]
+            force: bool,
+            #[mesh(3)]
+            message: String,
+        }
+        for message in ["a".repeat(1024), "before\0after".to_owned()] {
+            let encoded = mesh::payload::encode(PreviousSavedParams {
+                shutdown_type: save_restore::state::ShutdownType::PowerOff,
+                force: false,
+                message,
+            });
+            assert!(
+                mesh::payload::decode::<save_restore::state::ShutdownParams>(&encoded).is_err()
+            );
+        }
     }
 
     fn save_restore_channels() -> (RawAsyncChannel<GpadlRingMem>, RawAsyncChannel<GpadlRingMem>) {
@@ -1165,6 +1283,7 @@ mod tests {
             ShutdownParams {
                 shutdown_type: ShutdownType::PowerOff,
                 force: false,
+                message: ShutdownText::default(),
             },
         );
         let mut buffer = [0; hyperv_ic_protocol::MAX_MESSAGE_SIZE];

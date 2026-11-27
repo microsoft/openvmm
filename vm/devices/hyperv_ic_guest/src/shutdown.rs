@@ -22,6 +22,7 @@ use hyperv_ic_protocol::shutdown::SHUTDOWN_VERSION_3_1;
 use hyperv_ic_protocol::shutdown::SHUTDOWN_VERSION_3_2;
 use hyperv_ic_resources::shutdown::ShutdownParams;
 use hyperv_ic_resources::shutdown::ShutdownResult;
+use hyperv_ic_resources::shutdown::ShutdownText;
 use hyperv_ic_resources::shutdown::ShutdownType;
 use inspect::Inspect;
 use inspect::InspectMut;
@@ -315,18 +316,28 @@ impl<M: RingMem + Unpin> ShutdownGuestChannel<M> {
         } else {
             ShutdownType::PowerOff
         };
-        let params = ShutdownParams {
-            shutdown_type,
-            force: message.flags.force(),
-        };
-
-        // Notify the internal listener and wait for a response.
-        let status = match ic.send_shutdown_notification.call(|x| x, params).await {
-            Ok(ShutdownResult::Ok) => Status::SUCCESS,
-            Ok(ShutdownResult::Failed(x)) => Status(x),
-            Ok(ShutdownResult::NotReady) | Ok(ShutdownResult::AlreadyInProgress) | Err(_) => {
-                Status::FAIL
+        let units: Vec<u16> = message
+            .message
+            .as_chunks::<2>()
+            .0
+            .iter()
+            .map(|bytes| u16::from_le_bytes([bytes[0], bytes[1]]))
+            .collect();
+        let status = if let Ok(message_text) = ShutdownText::from_terminated_utf16(&units) {
+            let params = ShutdownParams {
+                shutdown_type,
+                force: message.flags.force(),
+                message: message_text,
+            };
+            match ic.send_shutdown_notification.call(|rpc| rpc, params).await {
+                Ok(ShutdownResult::Ok) => Status::SUCCESS,
+                Ok(ShutdownResult::Failed(status)) => Status(status),
+                Ok(ShutdownResult::NotReady) | Ok(ShutdownResult::AlreadyInProgress) | Err(_) => {
+                    Status::FAIL
+                }
             }
+        } else {
+            Status::INVALID_ARGUMENT
         };
 
         // Respond to the request.
