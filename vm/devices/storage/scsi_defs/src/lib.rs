@@ -229,10 +229,12 @@ pub const VPD_THIRD_PARTY_COPY: u8 = 0x8F;
 pub const VPD_BLOCK_LIMITS: u8 = 0xB0;
 pub const VPD_BLOCK_DEVICE_CHARACTERISTICS: u8 = 0xB1;
 pub const VPD_LOGICAL_BLOCK_PROVISIONING: u8 = 0xB2;
+pub const VPD_ZONED_BLOCK_DEVICE_CHARACTERISTICS: u8 = 0xB6;
 pub const VPD_MSFT_VIRTUAL_DEVICE_PROPERTIES: u8 = 0xCF;
 pub const VPD_MSFT_PAGING_EXTENT_PROPERTIES: u8 = 0xCE;
 pub const DIRECT_ACCESS_DEVICE: u8 = 0x00;
 pub const READ_ONLY_DIRECT_ACCESS_DEVICE: u8 = 0x05;
+pub const HOST_MANAGED_ZONED_BLOCK_DEVICE: u8 = 0x14;
 pub const ISO_INQUIRY_VPD_SUPPORTED_PAGE_COUNT: u8 = 0x02;
 
 pub const VPD_CODE_SET_RESERVED: u8 = 0;
@@ -492,6 +494,20 @@ pub struct VpdBlockDeviceCharacteristicsPage {
     pub data: [u8; 58], // Needn't know the details
 }
 
+/// VPD Page 0xB6, Zoned Block Device Characteristics.
+#[repr(C)]
+#[derive(Debug, IntoBytes, Immutable, KnownLayout, FromBytes)]
+pub struct VpdZonedBlockDeviceCharacteristicsPage {
+    pub flags: u8,
+    pub reserved1: [u8; 3],
+    pub optimal_open_sequential_write_preferred_zones: U32BE,
+    pub optimal_nonsequential_sequential_write_preferred_zones: U32BE,
+    pub max_open_sequential_write_required_zones: U32BE,
+    pub reserved2: [u8; 44],
+}
+
+pub const VPD_ZONED_URSWRZ: u8 = 1;
+
 #[repr(C)]
 #[derive(Debug, IntoBytes, Immutable, KnownLayout, FromBytes)]
 pub struct VpdMsftVirtualDevicePropertiesPage {
@@ -734,6 +750,26 @@ pub const SCSI_SENSEQ_INCOMPATIBLE_FORMAT: u8 = 0x02;
 
 // SCSI_ADSENSE_OPERATING_CONDITIONS_CHANGED (0x3f) qualifiers
 pub const SCSI_SENSEQ_OPERATING_DEFINITION_CHANGED: u8 = 0x02;
+
+// SCSI_ADSENSE_ILLEGAL_BLOCK (0x21) qualifiers
+pub const SCSI_SENSEQ_LOGICAL_ADDRESS_OUT_OF_RANGE: u8 = 0x00;
+pub const SCSI_SENSEQ_UNALIGNED_WRITE: u8 = 0x04;
+pub const SCSI_SENSEQ_WRITE_BOUNDARY_VIOLATION: u8 = 0x05;
+pub const SCSI_SENSEQ_READ_INVALID_DATA: u8 = 0x06;
+pub const SCSI_SENSEQ_READ_BOUNDARY_VIOLATION: u8 = 0x07;
+
+// SCSI_ADSENSE_WRITE_PROTECT (0x27) qualifiers
+pub const SCSI_SENSEQ_ZONE_IS_READ_ONLY: u8 = 0x08;
+
+// SCSI_ADSENSE_COMMAND_SEQUENCE_ERROR (0x2C) qualifiers
+pub const SCSI_SENSEQ_ZONE_IS_OFFLINE: u8 = 0x0E;
+pub const SCSI_SENSEQ_UNWRITTEN_DATA_IN_ZONE: u8 = 0x10;
+
+// SCSI_ADSENSE_RESOURCE_FAILURE (0x55) qualifiers
+pub const SCSI_SENSEQ_INSUFFICIENT_ZONE_RESOURCES: u8 = 0x0E;
+
+// SCSI_ADSENSE_WRITE_ERROR (0x0C) qualifiers
+pub const SCSI_SENSEQ_WRITE_ERROR_INSUFFICIENT_ZONE_RESOURCES: u8 = 0x12;
 
 open_enum! {
     #[derive(IntoBytes, Immutable, KnownLayout, FromBytes)]
@@ -1090,6 +1126,95 @@ pub const SERVICE_ACTION_GET_LBA_STATUS: u8 = 0x12;
 pub const SERVICE_ACTION_GET_PHYSICAL_ELEMENT_STATUS: u8 = 0x17;
 pub const SERVICE_ACTION_REMOVE_ELEMENT_AND_TRUNCATE: u8 = 0x18;
 
+pub const SERVICE_ACTION_REPORT_ZONES: u8 = 0x00;
+pub const SERVICE_ACTION_CLOSE_ZONE: u8 = 0x01;
+pub const SERVICE_ACTION_FINISH_ZONE: u8 = 0x02;
+pub const SERVICE_ACTION_OPEN_ZONE: u8 = 0x03;
+pub const SERVICE_ACTION_RESET_WRITE_POINTER: u8 = 0x04;
+
+#[repr(C)]
+#[derive(Debug, Copy, Clone, IntoBytes, Immutable, KnownLayout, FromBytes)]
+pub struct ZbcOut {
+    pub operation_code: ScsiOp,
+    pub service_action: u8,
+    pub zone_id: U64BE,
+    pub reserved: [u8; 4],
+    pub flags: u8,
+    pub control: u8,
+}
+
+pub const ZBC_OUT_ALL: u8 = 1;
+
+#[repr(C)]
+#[derive(Debug, Copy, Clone, IntoBytes, Immutable, KnownLayout, FromBytes)]
+pub struct ReportZones {
+    pub operation_code: ScsiOp,
+    pub service_action: u8,
+    pub zone_start_lba: U64BE,
+    pub allocation_length: U32BE,
+    pub flags: u8,
+    pub control: u8,
+}
+
+pub const REPORT_ZONES_PARTIAL: u8 = 1 << 7;
+pub const REPORT_ZONES_OPTION_MASK: u8 = 0x3f;
+pub const REPORT_ZONES_OPTION_ALL: u8 = 0x00;
+pub const REPORT_ZONES_OPTION_EMPTY: u8 = 0x01;
+pub const REPORT_ZONES_OPTION_IMPLICITLY_OPENED: u8 = 0x02;
+pub const REPORT_ZONES_OPTION_EXPLICITLY_OPENED: u8 = 0x03;
+pub const REPORT_ZONES_OPTION_CLOSED: u8 = 0x04;
+pub const REPORT_ZONES_OPTION_FULL: u8 = 0x05;
+pub const REPORT_ZONES_OPTION_READ_ONLY: u8 = 0x06;
+pub const REPORT_ZONES_OPTION_OFFLINE: u8 = 0x07;
+pub const REPORT_ZONES_OPTION_RWP_RECOMMENDED: u8 = 0x10;
+pub const REPORT_ZONES_OPTION_NON_SEQUENTIAL: u8 = 0x11;
+pub const REPORT_ZONES_OPTION_NOT_WRITE_POINTER: u8 = 0x3f;
+
+#[repr(C)]
+#[derive(Debug, Copy, Clone, IntoBytes, Immutable, KnownLayout, FromBytes)]
+pub struct ReportZonesData {
+    pub zone_list_length: U32BE,
+    pub same: u8,
+    pub reserved1: [u8; 3],
+    pub max_lba: U64BE,
+    pub reserved2: [u8; 48],
+}
+
+pub const ZONES_TYPE_AND_LENGTH_MAY_DIFFER: u8 = 0x0;
+pub const ZONES_TYPE_SAME_LENGTH_SAME: u8 = 0x1;
+pub const ZONES_TYPE_SAME_LAST_ZONE_LENGTH_DIFFERENT: u8 = 0x2;
+pub const ZONES_TYPE_MAY_DIFFER_LENGTH_SAME: u8 = 0x3;
+
+#[repr(C)]
+#[derive(Debug, Copy, Clone, IntoBytes, Immutable, KnownLayout, FromBytes)]
+pub struct ZoneDescriptor {
+    pub zone_type: u8,
+    pub condition: u8,
+    pub reserved1: [u8; 6],
+    pub zone_length: U64BE,
+    pub zone_start_lba: U64BE,
+    pub write_pointer_lba: U64BE,
+    pub reserved2: [u8; 32],
+}
+
+pub const ZONE_TYPE_MASK: u8 = 0x0f;
+pub const ZONE_TYPE_CONVENTIONAL: u8 = 0x01;
+pub const ZONE_TYPE_SEQUENTIAL_WRITE_REQUIRED: u8 = 0x02;
+pub const ZONE_TYPE_SEQUENTIAL_WRITE_PREFERRED: u8 = 0x03;
+
+pub const ZONE_CONDITION_SHIFT: u8 = 4;
+pub const ZONE_CONDITION_MASK: u8 = 0xf0;
+pub const ZONE_CONDITION_NOT_WRITE_POINTER: u8 = 0x00;
+pub const ZONE_CONDITION_EMPTY: u8 = 0x01;
+pub const ZONE_CONDITION_IMPLICITLY_OPENED: u8 = 0x02;
+pub const ZONE_CONDITION_EXPLICITLY_OPENED: u8 = 0x03;
+pub const ZONE_CONDITION_CLOSED: u8 = 0x04;
+pub const ZONE_CONDITION_READ_ONLY: u8 = 0x0d;
+pub const ZONE_CONDITION_FULL: u8 = 0x0e;
+pub const ZONE_CONDITION_OFFLINE: u8 = 0x0f;
+pub const ZONE_DESCRIPTOR_RWP_RECOMMENDED: u8 = 1;
+pub const ZONE_DESCRIPTOR_NON_SEQUENTIAL: u8 = 1 << 1;
+
 #[repr(C)]
 #[derive(Debug, Copy, Clone, IntoBytes, Immutable, KnownLayout, FromBytes)]
 pub struct ReadCapacityDataEx {
@@ -1126,6 +1251,7 @@ pub struct ReadCapacity16Data {
 
 pub const READ_CAPACITY16_LBPRZ: u8 = 1 << 6;
 pub const READ_CAPACITY16_LBPME: u8 = 1 << 7;
+pub const READ_CAPACITY16_RC_BASIS_LAST_LBA: u8 = 1 << 4;
 
 // This flag indicates that there is some special behavior required for the
 // request.  The precise meaning of the flag depends on the type/context of the
@@ -2577,4 +2703,54 @@ pub struct ReportLuns {
     pub allocation_length: U32BE,
     pub reserved2: u8,
     pub control: u8,
+}
+
+#[cfg(test)]
+mod zoned_tests {
+    use super::*;
+
+    #[test]
+    fn zoned_wire_structure_sizes() {
+        assert_eq!(size_of::<ZbcOut>(), 16);
+        assert_eq!(size_of::<ReportZones>(), 16);
+        assert_eq!(size_of::<ReportZonesData>(), 64);
+        assert_eq!(size_of::<ZoneDescriptor>(), 64);
+        assert_eq!(size_of::<VpdZonedBlockDeviceCharacteristicsPage>(), 60);
+    }
+
+    #[test]
+    fn zbc_out_encoding() {
+        let cdb = ZbcOut {
+            operation_code: ScsiOp::ZBC_OUT,
+            service_action: SERVICE_ACTION_RESET_WRITE_POINTER,
+            zone_id: 0x0102030405060708u64.into(),
+            reserved: [0; 4],
+            flags: ZBC_OUT_ALL,
+            control: 0,
+        };
+
+        assert_eq!(
+            cdb.as_bytes(),
+            &[0x94, 0x04, 1, 2, 3, 4, 5, 6, 7, 8, 0, 0, 0, 0, 1, 0]
+        );
+    }
+
+    #[test]
+    fn report_zones_encoding() {
+        let cdb = ReportZones {
+            operation_code: ScsiOp::ZBC_IN,
+            service_action: SERVICE_ACTION_REPORT_ZONES,
+            zone_start_lba: 0x0102030405060708u64.into(),
+            allocation_length: 0x10203040u32.into(),
+            flags: REPORT_ZONES_PARTIAL | REPORT_ZONES_OPTION_CLOSED,
+            control: 0,
+        };
+
+        assert_eq!(
+            cdb.as_bytes(),
+            &[
+                0x95, 0, 1, 2, 3, 4, 5, 6, 7, 8, 0x10, 0x20, 0x30, 0x40, 0x84, 0
+            ]
+        );
+    }
 }

@@ -197,6 +197,34 @@ describes the source definitions.
   * A dynamic or differencing VHD1 file with a `.vhd` extension on Windows
   * A VHDX file with a `.vhdx` extension
 
+  Add `zoned` to present a writable SCSI disk as a host-managed zoned
+  block device. Zoned disks must be attached to a SCSI controller and
+  cannot be read-only, relayed through OpenHCL, or used with IDE, NVMe,
+  or virtio-blk transports. Optional parameters are:
+  * `zone_size=<SIZE>` - zone size; defaults to 256 MB
+  * `conventional_zones=<COUNT>` - conventional zones at the beginning
+    of the disk; defaults to 1
+  * `max_open_zones=<COUNT>` - maximum open sequential zones; defaults
+    to 32
+  * `restricted_read` - reject reads of unwritten blocks and reads that
+    span sequential zones
+
+  ```text
+  openvmm --vmbus-scsi id=smr0 --disk file:smr.vhdx,on=smr0,zoned,zone_size=256M,conventional_zones=524,max_open_zones=128
+  ```
+
+  The `zoned` option wraps the ordinary backing disk with the
+  `disk_zone_emu` backend. That backend enforces zoned-media I/O rules and
+  stores a fixed metadata locator at the start of the backing disk and
+  versioned checkpoints plus a bounded delta journal at the end. Guest-visible
+  capacity is limited to complete zones between those hidden regions. The
+  locator records the original backing geometry, so resizing an initialized
+  zoned image is rejected rather than silently losing zone state. Images
+  created by the earlier end-only draft metadata format must be recreated. The
+  SCSI disk layer translates ZBC commands and discovery data to the
+  protocol-neutral zoned backend interface; a physical zoned disk backend can
+  implement the same interface without using emulated metadata.
+
   On Linux, raw files and block devices use the `disk_blockdevice` backend
   (io_uring-based async I/O) by default. Append `;direct` to the path to
   bypass the OS page cache, e.g. `--disk file:/dev/sdb;direct,on=scsi0`.

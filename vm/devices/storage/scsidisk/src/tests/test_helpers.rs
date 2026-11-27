@@ -30,7 +30,23 @@ use zerocopy::IntoBytes;
 pub struct TestDiskStorageState {
     pub storage: Vec<u8>,
     pub is_fua_set: bool,
+    pub sync_count: u64,
     pub sector_count: u64,
+    pub operations: Vec<TestDiskOperation>,
+    pub fail_next_write_once: bool,
+    pub fail_next_sync_once: bool,
+    pub fail_sync_on_count: Option<u64>,
+    pub partial_write_once: Option<(u64, usize)>,
+}
+
+#[derive(Debug, Copy, Clone, PartialEq, Eq)]
+pub enum TestDiskOperation {
+    Write {
+        sector: u64,
+        bytes: usize,
+        fua: bool,
+    },
+    Sync,
 }
 
 #[derive(Debug)]
@@ -39,6 +55,14 @@ pub struct TestDisk {
     pub physical_sector_size: u32,
     pub read_only: bool,
     pub state: Arc<Mutex<TestDiskStorageState>>,
+    pub write_blocker: Option<Arc<TestDiskWriteBlocker>>,
+}
+
+#[derive(Debug)]
+pub struct TestDiskWriteBlocker {
+    pub sector: u64,
+    pub entered: Mutex<Option<mesh::OneshotSender<()>>>,
+    pub release: Mutex<Option<mesh::OneshotReceiver<()>>>,
 }
 
 impl Inspect for TestDisk {
@@ -62,7 +86,13 @@ impl TestDisk {
         let state = Arc::new(Mutex::new(TestDiskStorageState {
             storage: buffer,
             is_fua_set: false,
+            sync_count: 0,
             sector_count,
+            operations: Vec::new(),
+            fail_next_write_once: false,
+            fail_next_sync_once: false,
+            fail_sync_on_count: None,
+            partial_write_once: None,
         }));
         (
             TestDisk {
@@ -70,6 +100,7 @@ impl TestDisk {
                 read_only,
                 state: state.clone(),
                 physical_sector_size,
+                write_blocker: None,
             },
             state,
         )
@@ -127,20 +158,71 @@ impl DiskIo for TestDisk {
         sector: u64,
         fua: bool,
     ) -> Result<(), DiskError> {
+        if let Some(blocker) = &self.write_blocker {
+            if blocker.sector == sector {
+                if let Some(entered) = blocker.entered.lock().take() {
+                    entered.send(());
+                }
+                let release = blocker.release.lock().take();
+                if let Some(release) = release {
+                    let _ = release.await;
+                }
+            }
+        }
+
         let offset = sector as usize * self.sector_size() as usize;
         let end_point = offset + buffers.len();
         let mut state = self.state.lock();
+        if state.fail_next_write_once {
+            state.fail_next_write_once = false;
+            return Err(DiskError::Io(std::io::Error::other(
+                "injected write failure",
+            )));
+        }
         if state.storage.len() < end_point {
             return Err(DiskError::IllegalBlock);
+        }
+        if state
+            .partial_write_once
+            .is_some_and(|(target_sector, _)| target_sector == sector)
+        {
+            let (_, partial_bytes) = state.partial_write_once.take().unwrap();
+            let mut data = vec![0; buffers.len()];
+            buffers.reader().read(&mut data)?;
+            let partial_bytes = partial_bytes.min(data.len());
+            state.storage[offset..offset + partial_bytes].copy_from_slice(&data[..partial_bytes]);
+            state.operations.push(TestDiskOperation::Write {
+                sector,
+                bytes: partial_bytes,
+                fua,
+            });
+            return Err(DiskError::Io(std::io::Error::other(
+                "injected partial write failure",
+            )));
         }
         buffers
             .reader()
             .read(&mut state.storage[offset..end_point])?;
         state.is_fua_set = fua;
+        state.operations.push(TestDiskOperation::Write {
+            sector,
+            bytes: buffers.len(),
+            fua,
+        });
         Ok(())
     }
 
     async fn sync_cache(&self) -> Result<(), DiskError> {
+        let mut state = self.state.lock();
+        state.sync_count += 1;
+        state.operations.push(TestDiskOperation::Sync);
+        if state.fail_next_sync_once || state.fail_sync_on_count == Some(state.sync_count) {
+            state.fail_next_sync_once = false;
+            state.fail_sync_on_count = None;
+            return Err(DiskError::Io(std::io::Error::other(
+                "injected sync failure",
+            )));
+        }
         Ok(())
     }
 

@@ -22,7 +22,9 @@ inspect.workspace = true
 anyhow.workspace = true
 
 [dev-dependencies]
+disk_zone_emu.workspace = true
 disklayer_ram.workspace = true
+guestmem.workspace = true
 storage_tests.workspace = true
 
 [lints]

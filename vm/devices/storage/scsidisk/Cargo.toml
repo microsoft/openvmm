@@ -34,6 +34,8 @@ tracing.workspace = true
 zerocopy.workspace = true
 
 [dev-dependencies]
+disk_backend_resources.workspace = true
+disk_zone_emu.workspace = true
 disk_hook.workspace = true
 disk_prwrap.workspace = true
 getrandom.workspace = true

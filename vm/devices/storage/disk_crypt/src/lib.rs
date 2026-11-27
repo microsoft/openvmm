@@ -38,6 +38,9 @@ pub enum NewDiskError {
     /// The key size is invalid.
     #[error("invalid key size for cipher")]
     InvalidKeySize,
+    /// Zoned disks cannot be wrapped by the encryption layer.
+    #[error("zoned disks are not supported by the encryption layer")]
+    ZonedDiskUnsupported,
 }
 
 impl CryptDisk {
@@ -48,6 +51,10 @@ impl CryptDisk {
         key: &[u8],
         inner: Disk,
     ) -> Result<Self, NewDiskError> {
+        if inner.zoned().is_some() {
+            return Err(NewDiskError::ZonedDiskUnsupported);
+        }
+
         match cipher {
             disk_crypt_resources::Cipher::XtsAes256 => {}
         }
@@ -194,7 +201,10 @@ fn crypto_error(err: crypto::xts_aes_256::XtsAes256Error) -> DiskError {
 #[cfg(test)]
 mod tests {
     use crate::CryptDisk;
+    use crate::NewDiskError;
     use disk_backend::Disk;
+    use disk_backend_resources::ZoneEmulationParameters;
+    use disk_zone_emu::ZoneEmulationDisk;
     use guestmem::GuestMemory;
     use pal_async::async_test;
     use scsi_buffers::OwnedRequestBuffers;
@@ -215,6 +225,33 @@ mod tests {
         )
         .unwrap();
         storage_tests::sector_range::test_disk_sector_range_conformance(&disk).await;
+    }
+
+    #[test]
+    fn rejects_zoned_inner_disk() {
+        let inner = disklayer_ram::ram_disk(128 * 512, false).unwrap();
+        let zoned = ZoneEmulationDisk::new(
+            inner,
+            ZoneEmulationParameters {
+                zone_size_bytes: 4096,
+                conventional_zone_count: 1,
+                max_open_zones: 2,
+                unrestricted_read: true,
+            },
+        )
+        .unwrap();
+        let mut key = [0; 64];
+        key[..32].fill(0xab);
+        key[32..].fill(0xcd);
+
+        assert!(matches!(
+            CryptDisk::new(
+                disk_crypt_resources::Cipher::XtsAes256,
+                &key,
+                Disk::new(zoned).unwrap()
+            ),
+            Err(NewDiskError::ZonedDiskUnsupported)
+        ));
     }
 
     #[async_test]

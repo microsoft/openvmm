@@ -636,6 +636,7 @@ async fn vm_config_from_command_line(
         nsid,
         lun,
         ref relay,
+        ref zoned,
     } in &opt.disk
     {
         if serial.is_some() {
@@ -688,6 +689,8 @@ async fn vm_config_from_command_line(
                 kind,
                 is_dvd,
                 read_only,
+                zoned.clone(),
+                Default::default(),
             )
             .await?;
     }
@@ -709,6 +712,8 @@ async fn vm_config_from_command_line(
                 kind,
                 is_dvd,
                 read_only,
+                None,
+                Default::default(),
             )
             .await?;
     }
@@ -748,6 +753,7 @@ async fn vm_config_from_command_line(
         nsid: _,
         lun: _,
         relay: _,
+        ref zoned,
     } in &opt.nvme
     {
         if serial.is_some() {
@@ -766,7 +772,17 @@ async fn vm_config_from_command_line(
             storage_builder::DiskLocation::Nvme(None)
         };
         storage
-            .add(vtl, underhill, None, target, kind, is_dvd, read_only)
+            .add(
+                vtl,
+                underhill,
+                None,
+                target,
+                kind,
+                is_dvd,
+                read_only,
+                zoned.clone(),
+                Default::default(),
+            )
             .await?;
     }
 
@@ -783,6 +799,7 @@ async fn vm_config_from_command_line(
         nsid: _,
         lun: _,
         relay: _,
+        ref zoned,
     } in &opt.virtio_blk
     {
         if underhill.is_some() {
@@ -804,6 +821,8 @@ async fn vm_config_from_command_line(
                 kind,
                 is_dvd,
                 read_only,
+                zoned.clone(),
+                Default::default(),
             )
             .await?;
     }
