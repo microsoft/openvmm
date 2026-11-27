@@ -44,6 +44,7 @@ use inspect::Inspect;
 use inspect::InspectMut;
 use inspect_counters::Counter;
 use parking_lot::RwLock;
+use std::sync::atomic::Ordering;
 use virt::EmulatorMonitorSupport;
 use virt::VpHaltReason;
 use virt::VpIndex;
@@ -58,7 +59,6 @@ use virt_support_aarch64emu::emulate::EmuTranslateError;
 use virt_support_aarch64emu::emulate::EmuTranslateResult;
 use virt_support_aarch64emu::emulate::EmulatorSupport;
 use zerocopy::FromZeros;
-use zerocopy::IntoBytes;
 
 /// A backing for hypervisor-backed partitions (non-isolated and
 /// software-isolated).
@@ -445,6 +445,7 @@ pub struct UhCpuStateCache {
     x18: Option<(u64, bool)>,
 
     cpsr: Option<Cpsr64>,
+    sctlr: Option<aarch64defs::SctlrEl1>,
 }
 
 impl<T: CpuIo> AccessCpuState for UhEmulationState<'_, '_, T, HypervisorBackedArm64> {
@@ -605,6 +606,21 @@ impl<T: CpuIo> AccessCpuState for UhEmulationState<'_, '_, T, HypervisorBackedAr
 }
 
 impl<T: CpuIo> EmulatorSupport for UhEmulationState<'_, '_, T, HypervisorBackedArm64> {
+    fn sctlr(&mut self) -> aarch64defs::SctlrEl1 {
+        *self.cache.sctlr.get_or_insert_with(|| {
+            self.vp
+                .runner
+                .get_vp_register(self.vtl, HvArm64RegisterName::SctlrEl1)
+                .expect("register query should not fail")
+                .as_u64()
+                .into()
+        })
+    }
+
+    fn memory_barrier(&mut self, ordering: Ordering) {
+        std::sync::atomic::fence(ordering);
+    }
+
     fn vp_index(&self) -> VpIndex {
         self.vp.vp_index()
     }
@@ -703,15 +719,7 @@ impl<T: CpuIo> EmulatorSupport for UhEmulationState<'_, '_, T, HypervisorBackedA
                 return Ok(());
             }
 
-            let cpsr: Cpsr64 = self
-                .vp
-                .runner
-                .get_vp_register(self.vtl, HvArm64RegisterName::SpsrEl2)
-                .unwrap()
-                .as_u64()
-                .into();
-
-            let flags = if cpsr.el() == 0 {
+            let flags = if self.cpsr().el() == 0 {
                 HvMapGpaFlags::new().with_user_executable(true)
             } else {
                 HvMapGpaFlags::new().with_kernel_executable(true)
@@ -739,13 +747,21 @@ impl<T: CpuIo> EmulatorSupport for UhEmulationState<'_, '_, T, HypervisorBackedA
     ) -> Result<EmuTranslateResult, EmuTranslateError> {
         let mut control_flags = hypercall::TranslateGvaControlFlagsArm64::new();
         match mode {
-            emulate::TranslateMode::Read => control_flags.set_validate_read(true),
-            emulate::TranslateMode::Write => {
+            emulate::TranslateMode::Read | emulate::TranslateMode::ReadUnprivileged => {
+                control_flags.set_validate_read(true)
+            }
+            emulate::TranslateMode::Write | emulate::TranslateMode::WriteUnprivileged => {
                 control_flags.set_validate_read(true);
                 control_flags.set_validate_write(true);
             }
             emulate::TranslateMode::Execute => control_flags.set_validate_execute(true),
         };
+        if matches!(
+            mode,
+            emulate::TranslateMode::ReadUnprivileged | emulate::TranslateMode::WriteUnprivileged
+        ) {
+            control_flags.set_user_access(true);
+        }
 
         // The translation will be used, so set the appropriate page table bits
         // (the access/dirty bit).
@@ -790,10 +806,11 @@ impl<T: CpuIo> EmulatorSupport for UhEmulationState<'_, '_, T, HypervisorBackedA
     }
 
     fn inject_pending_event(&mut self, event_info: HvAarch64PendingEvent) {
-        let regs = [(
-            HvArm64RegisterName::PendingEvent0,
-            u128::from_ne_bytes(event_info.as_bytes().try_into().unwrap()),
-        )];
+        let [reg0, reg1]: [u128; 2] = zerocopy::transmute!(event_info);
+        let regs = [
+            (HvArm64RegisterName::PendingEvent0, reg0),
+            (HvArm64RegisterName::PendingEvent1, reg1),
+        ];
 
         self.vp
             .runner

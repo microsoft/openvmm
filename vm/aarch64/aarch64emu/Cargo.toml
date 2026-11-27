@@ -18,6 +18,7 @@ futures.workspace = true
 getrandom.workspace = true
 pal_async.workspace = true
 parking_lot.workspace = true
+test_with_tracing.workspace = true
 
 [lints]
 workspace = true
