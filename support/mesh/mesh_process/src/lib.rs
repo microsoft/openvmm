@@ -1010,6 +1010,7 @@ async fn wait_mesh_child(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use mesh::rpc::Rpc;
     use pal_async::DefaultDriver;
     use pal_async::async_test;
     use pal_async::task::Spawn;
@@ -1047,6 +1048,361 @@ mod tests {
         // Drop the listener and verify the accept loop stops.
         drop(listener);
 
+        mesh.shutdown().await;
+    }
+
+    const CHILD_TEST: &str = "tests::host_entry_without_invitation_does_not_run_worker";
+    const VALUE_ENV: &str = "MESH_PROCESS_TEST_VALUE";
+    const ERROR_ENV: &str = "MESH_PROCESS_TEST_EXPECT_ERROR";
+    const STDERR_MARKER: &str = "mesh test child diagnostic";
+
+    #[derive(MeshPayload)]
+    struct ChildDetails {
+        pid: u32,
+        args: Vec<String>,
+        value: Option<String>,
+        invitation_cleared: bool,
+    }
+
+    #[derive(MeshPayload)]
+    enum ChildRequest {
+        Echo(Rpc<String, String>),
+        WaitForCrash(mesh::OneshotSender<()>),
+    }
+
+    type ChildInit = (
+        mesh::OneshotSender<ChildDetails>,
+        mesh::Receiver<ChildRequest>,
+    );
+
+    struct TestHost {
+        pid: i32,
+        details: ChildDetails,
+        requests: mesh::Sender<ChildRequest>,
+    }
+
+    // Launch only this module's child entry point, not the surrounding test suite.
+    fn child_config(name: &str) -> ProcessConfig {
+        ProcessConfig::new(name).args(["--exact", CHILD_TEST, "--nocapture", "--test-threads=1"])
+    }
+
+    // Wait for the worker's handshake so assertions never race process startup.
+    async fn launch(mesh: &Mesh, config: ProcessConfig) -> TestHost {
+        let (started, ready) = mesh::oneshot();
+        let (requests, child_requests) = mesh::channel();
+        let pid = mesh
+            .launch_host(config, (started, child_requests))
+            .await
+            .unwrap();
+        TestHost {
+            pid,
+            details: ready.await.unwrap(),
+            requests,
+        }
+    }
+
+    // Echo through the worker's public mesh channel.
+    async fn echo(host: &TestHost, value: &str) -> String {
+        host.requests
+            .call(ChildRequest::Echo, value.to_owned())
+            .await
+            .unwrap()
+    }
+
+    // Test: Run the host entry without an invitation; subprocess callers also use this entry.
+    // Expected: No worker runs without an invitation, and invited workers exchange real mesh RPCs.
+    #[test]
+    fn host_entry_without_invitation_does_not_run_worker() {
+        let called = std::cell::Cell::new(false);
+        let result = try_run_mesh_host("unit-mesh", async |(started, mut requests): ChildInit| {
+            called.set(true);
+            started.send(ChildDetails {
+                pid: std::process::id(),
+                args: std::env::args().skip(1).collect(),
+                value: std::env::var(VALUE_ENV).ok(),
+                invitation_cleared: std::env::var_os(INVITATION_ENV_NAME).is_none(),
+            });
+            eprintln!("{STDERR_MARKER}");
+            while let Some(request) = requests.next().await {
+                match request {
+                    ChildRequest::Echo(request) => request.handle(async |value| value).await,
+                    ChildRequest::WaitForCrash(ready) => {
+                        ready.send(());
+                        std::future::pending::<()>().await;
+                    }
+                }
+            }
+            Ok(())
+        });
+
+        if let Ok(expected) = std::env::var(ERROR_ENV) {
+            let error = result.unwrap_err();
+            assert!(
+                error.chain().any(|e| e.to_string() == expected),
+                "{error:#}"
+            );
+            assert!(!called.get());
+            assert!(std::env::var_os(INVITATION_ENV_NAME).is_none());
+        } else {
+            result.unwrap();
+            assert!(!called.get(), "an uninvited worker must not be called");
+        }
+    }
+
+    // Test: Provide malformed invitations in isolated child-process environments.
+    // Expected: Base64 and protobuf errors retain context, clear the secret, and never run a worker.
+    #[test]
+    fn malformed_invitations_are_rejected_before_starting_a_worker() {
+        for (invitation, expected) in [
+            ("%%%", "failed to base64 decode invitation"),
+            ("/w==", "failed to protobuf decode invitation"),
+        ] {
+            let output = std::process::Command::new(std::env::current_exe().unwrap())
+                .args(["--exact", CHILD_TEST, "--nocapture", "--test-threads=1"])
+                .env(INVITATION_ENV_NAME, invitation)
+                .env(ERROR_ENV, expected)
+                .output()
+                .unwrap();
+            assert!(output.status.success(), "{output:?}");
+        }
+    }
+
+    // Test: Launch a worker using the current executable, extra environment, and redirected stderr.
+    // Expected: The reported PID and arguments match the launch; RPCs and clean shutdown succeed.
+    #[async_test]
+    async fn launched_worker_receives_configuration_and_exchanges_messages() {
+        let mesh = Mesh::new("worker-lifecycle".into()).unwrap();
+        let log = tempfile::NamedTempFile::new().unwrap();
+        let host = launch(
+            &mesh,
+            child_config("configured-worker")
+                .env([(OsString::from(VALUE_ENV), OsString::from("configured"))])
+                .stderr(Some(log.reopen().unwrap())),
+        )
+        .await;
+
+        assert_eq!(host.pid as u32, host.details.pid);
+        assert_ne!(host.details.pid, std::process::id());
+        assert_eq!(host.details.value.as_deref(), Some("configured"));
+        assert!(host.details.invitation_cleared);
+        assert_eq!(
+            host.details.args,
+            [
+                "--exact",
+                CHILD_TEST,
+                "--nocapture",
+                "--test-threads=1",
+                "configured-worker",
+            ]
+        );
+        assert_eq!(echo(&host, "first message").await, "first message");
+        assert_eq!(echo(&host, "second message").await, "second message");
+        drop(host);
+        mesh.shutdown().await;
+        assert!(
+            std::fs::read_to_string(log.path())
+                .unwrap()
+                .contains(STDERR_MARKER)
+        );
+    }
+
+    struct TestSandbox;
+
+    impl SandboxProfile for TestSandbox {
+        fn apply(&mut self, builder: &mut ProcessBuilder<'_>) {
+            #[cfg(unix)]
+            builder.env(VALUE_ENV, "sandbox-applied");
+            #[cfg(windows)]
+            builder.extend_env([(OsString::from(VALUE_ENV), OsString::from("sandbox-applied"))]);
+        }
+    }
+
+    // Test: Launch an explicit executable with a sandbox profile and no appended worker argument.
+    // Expected: The profile affects the actual child environment and the argument opt-out is honored.
+    #[async_test]
+    async fn sandbox_and_explicit_executable_configuration_reach_the_child() {
+        let mesh = Mesh::new("sandbox-lifecycle".into()).unwrap();
+        let host = launch(
+            &mesh,
+            ProcessConfig::new_with_sandbox("sandbox-worker", Box::new(TestSandbox))
+                .process_name(std::env::current_exe().unwrap())
+                .args(["--exact", CHILD_TEST, "--nocapture", "--test-threads=1"])
+                .skip_worker_arg(true),
+        )
+        .await;
+        assert_eq!(host.details.value.as_deref(), Some("sandbox-applied"));
+        assert_eq!(
+            host.details.args,
+            ["--exact", CHILD_TEST, "--nocapture", "--test-threads=1"]
+        );
+        assert_eq!(echo(&host, "sandbox echo").await, "sandbox echo");
+        drop(host);
+        mesh.shutdown().await;
+    }
+
+    // Test: Fail to launch an executable, then launch a valid worker on the same mesh.
+    // Expected: The original OS error remains available and a failed launch does not poison the mesh.
+    #[async_test]
+    async fn failed_launch_retains_context_and_allows_retry() {
+        let mesh = Mesh::new("failed-launch".into()).unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        let error = mesh
+            .launch_host(
+                ProcessConfig::new("missing").process_name(dir.path().join("no-executable")),
+                (),
+            )
+            .await
+            .unwrap_err();
+        assert!(
+            error
+                .chain()
+                .any(|e| e.to_string() == "failed to launch mesh process"),
+            "{error:#}"
+        );
+        assert!(error.chain().any(|e| {
+            e.downcast_ref::<std::io::Error>()
+                .is_some_and(|e| e.kind() == std::io::ErrorKind::NotFound)
+        }));
+        let host = launch(&mesh, child_config("retry-worker")).await;
+        assert_eq!(echo(&host, "retry").await, "retry");
+        drop(host);
+        mesh.shutdown().await;
+    }
+
+    // Test: Send a crash request to a live worker while its application channel remains open.
+    // Expected: The worker panics and closes that channel; the parent can shut down cleanly.
+    #[async_test]
+    async fn crash_request_terminates_only_the_target_worker() {
+        let mesh = Mesh::new("crash-lifecycle".into()).unwrap();
+        let log = tempfile::NamedTempFile::new().unwrap();
+        let crashed = launch(
+            &mesh,
+            child_config("crash-worker").stderr(Some(log.reopen().unwrap())),
+        )
+        .await;
+        let survivor = launch(&mesh, child_config("surviving-worker")).await;
+        let (ready, waiting) = mesh::oneshot();
+        crashed.requests.send(ChildRequest::WaitForCrash(ready));
+        waiting.await.unwrap();
+        mesh.crash(crashed.pid);
+        assert!(
+            crashed
+                .requests
+                .call(ChildRequest::Echo, String::from("after crash"))
+                .await
+                .is_err()
+        );
+        assert_eq!(echo(&survivor, "still alive").await, "still alive");
+        mesh.crash(-1);
+        drop(crashed);
+        drop(survivor);
+        mesh.shutdown().await;
+        assert!(
+            std::fs::read_to_string(log.path())
+                .unwrap()
+                .contains("explicit panic request")
+        );
+    }
+
+    // Test: Listen on a regular file and connect to a missing endpoint.
+    // Expected: Both operations report their failure context and the existing file is unchanged.
+    #[async_test]
+    async fn invalid_endpoints_report_errors_without_removing_regular_files(driver: DefaultDriver) {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("not-a-socket");
+        std::fs::write(&path, "preserve this file").unwrap();
+        let mesh = Mesh::new("invalid-endpoints".into()).unwrap();
+        let error = mesh.listen::<String>(&path).await.err().unwrap();
+        assert!(
+            error
+                .chain()
+                .any(|e| e.to_string() == "failed to bind mesh listener"),
+            "{error:#}"
+        );
+        assert_eq!(
+            std::fs::read_to_string(&path).unwrap(),
+            "preserve this file"
+        );
+        let error = connect::<String>(driver, &dir.path().join("missing"))
+            .await
+            .err()
+            .unwrap();
+        assert!(
+            error
+                .chain()
+                .any(|e| e.to_string() == "failed to connect to mesh listener"),
+            "{error:#}"
+        );
+        mesh.shutdown().await;
+    }
+
+    // Test: Reuse a stale Unix socket for a listener with two independent clients.
+    // Expected: Binding succeeds, each client's ordering is preserved, and one disconnect is isolated.
+    #[cfg(unix)]
+    #[async_test]
+    async fn stale_socket_is_replaced_and_clients_remain_independent(driver: DefaultDriver) {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("stale.sock");
+        drop(std::os::unix::net::UnixListener::bind(&path).unwrap());
+        let mesh = Mesh::new("stale-socket".into()).unwrap();
+        let mut listener = mesh.listen::<String>(&path).await.unwrap();
+        let (a, connection_a) = connect::<String>(driver.clone(), &path).await.unwrap();
+        let (b, connection_b) = connect::<String>(driver, &path).await.unwrap();
+        for i in 0..2 {
+            a.send(format!("a{i}"));
+            b.send(format!("b{i}"));
+        }
+        let mut messages = Vec::new();
+        for _ in 0..4 {
+            messages.push(listener.next().await.unwrap());
+        }
+        for prefix in ['a', 'b'] {
+            assert_eq!(
+                messages
+                    .iter()
+                    .filter(|s| s.starts_with(prefix))
+                    .cloned()
+                    .collect::<Vec<_>>(),
+                [format!("{prefix}0"), format!("{prefix}1")]
+            );
+        }
+        drop(a);
+        connection_a.shutdown().await;
+        b.send("b2".to_owned());
+        assert_eq!(listener.next().await.as_deref(), Some("b2"));
+        drop(b);
+        connection_b.shutdown().await;
+        drop(listener);
+        mesh.shutdown().await;
+    }
+
+    // Test: Gracefully shut down a connected client immediately after queuing messages.
+    // Expected: Every queued message reaches the listener in order while shutdown
+    //       and reception complete without keeping the sender alive.
+    #[async_test]
+    async fn graceful_client_shutdown_delivers_queued_messages(driver: DefaultDriver) {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("drain.sock");
+        let mesh = Mesh::new("drain-client".into()).unwrap();
+        let mut listener = mesh.listen::<u32>(&path).await.unwrap();
+        let (sender, connection) = connect::<u32>(driver, &path).await.unwrap();
+
+        // Establish the server's return bridge before shutdown, including on ALPC.
+        sender.send(0);
+        assert_eq!(listener.next().await, Some(0));
+        for value in 1..=16 {
+            sender.send(value);
+        }
+        drop(sender);
+        let (_, received) = futures::join!(connection.shutdown(), async {
+            let mut received = Vec::new();
+            for _ in 1..=16 {
+                received.push(listener.next().await.unwrap());
+            }
+            received
+        });
+        assert_eq!(received, (1..=16).collect::<Vec<_>>());
+        drop(listener);
         mesh.shutdown().await;
     }
 }
