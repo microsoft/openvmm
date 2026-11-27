@@ -15,6 +15,10 @@ pub mod capabilities {
     /// Support for nested virtualization
     pub const NESTED_VIRT: &str = "nested_virt";
 
+    /// Support for booting an mshv root partition (the Microsoft hypervisor
+    /// and its Linux root) as a guest.
+    pub const NESTED_MSHV: &str = "nested_mshv";
+
     /// Support for resetting a partition with nested virtualization enabled.
     pub const NESTED_RESET: &str = "nested_reset";
 
@@ -24,6 +28,7 @@ pub mod capabilities {
         VPCI,
         WINDOWS_PARTITION_RESET,
         NESTED_VIRT,
+        NESTED_MSHV,
         NESTED_RESET,
         "test_disk",
         "edu_initiator",

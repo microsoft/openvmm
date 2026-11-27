@@ -129,8 +129,8 @@ async fn frontpage<T: PetriVmmBackend>(config: PetriVmBuilder<T>) -> anyhow::Res
     hyperv_openhcl_uefi_x64(vhd(ubuntu_2504_server_x64)),
     openvmm_openhcl_uefi_x64[vbs](vhd(windows_datacenter_core_2025_x64_prepped)),
     openvmm_openhcl_uefi_x64[vbs](vhd(ubuntu_2504_server_x64)),
-    unstable(reason = "Hyper-V VBS failures are not currently actionable.", hyperv_openhcl_uefi_x64[vbs](vhd(windows_datacenter_core_2025_x64_prepped))),
-    unstable(reason = "Hyper-V VBS failures are not currently actionable.", hyperv_openhcl_uefi_x64[vbs](vhd(ubuntu_2504_server_x64))),
+    hyperv_openhcl_uefi_x64[vbs](vhd(windows_datacenter_core_2025_x64_prepped)),
+    hyperv_openhcl_uefi_x64[vbs](vhd(ubuntu_2504_server_x64)),
     hyperv_openhcl_uefi_x64[snp](vhd(windows_datacenter_core_2025_x64_prepped)),
     hyperv_openhcl_uefi_x64[snp](vhd(ubuntu_2504_server_x64)),
     hyperv_openhcl_uefi_x64[tdx](vhd(windows_datacenter_core_2025_x64_prepped)),
@@ -686,8 +686,8 @@ async fn boot_no_agent<T: PetriVmmBackend>(config: PetriVmBuilder<T>) -> anyhow:
     hyperv_openhcl_uefi_x64(vhd(ubuntu_2504_server_x64)),
     openvmm_openhcl_uefi_x64[vbs](vhd(windows_datacenter_core_2025_x64_prepped)),
     openvmm_openhcl_uefi_x64[vbs](vhd(ubuntu_2504_server_x64)),
-    unstable(reason = "Hyper-V VBS failures are not currently actionable.", hyperv_openhcl_uefi_x64[vbs](vhd(windows_datacenter_core_2025_x64_prepped))),
-    unstable(reason = "Hyper-V VBS failures are not currently actionable.", hyperv_openhcl_uefi_x64[vbs](vhd(ubuntu_2504_server_x64))),
+    hyperv_openhcl_uefi_x64[vbs](vhd(windows_datacenter_core_2025_x64_prepped)),
+    hyperv_openhcl_uefi_x64[vbs](vhd(ubuntu_2504_server_x64)),
     hyperv_openhcl_uefi_x64[snp](vhd(windows_datacenter_core_2025_x64_prepped)),
     hyperv_openhcl_uefi_x64[snp](vhd(ubuntu_2504_server_x64)),
     hyperv_openhcl_uefi_x64[tdx](vhd(windows_datacenter_core_2025_x64_prepped)),
@@ -707,8 +707,8 @@ async fn boot_heavy<T: PetriVmmBackend>(config: PetriVmBuilder<T>) -> anyhow::Re
 #[vmm_test(
     openvmm_openhcl_uefi_x64[vbs](vhd(windows_datacenter_core_2025_x64_prepped)),
     openvmm_openhcl_uefi_x64[vbs](vhd(ubuntu_2504_server_x64)),
-    unstable(reason = "Hyper-V VBS failures are not currently actionable.", hyperv_openhcl_uefi_x64[vbs](vhd(windows_datacenter_core_2025_x64_prepped))),
-    unstable(reason = "Hyper-V VBS failures are not currently actionable.", hyperv_openhcl_uefi_x64[vbs](vhd(ubuntu_2504_server_x64))),
+    hyperv_openhcl_uefi_x64[vbs](vhd(windows_datacenter_core_2025_x64_prepped)),
+    hyperv_openhcl_uefi_x64[vbs](vhd(ubuntu_2504_server_x64)),
     hyperv_openhcl_uefi_x64[snp](vhd(windows_datacenter_core_2025_x64_prepped)),
     hyperv_openhcl_uefi_x64[snp](vhd(ubuntu_2504_server_x64)),
     hyperv_openhcl_uefi_x64[tdx](vhd(windows_datacenter_core_2025_x64_prepped)),
@@ -809,7 +809,7 @@ async fn boot_nvme_vpci_relay<T: PetriVmmBackend>(config: PetriVmBuilder<T>) -> 
     hyperv_openhcl_uefi_x64(vhd(ubuntu_2504_server_x64)),
     openvmm_openhcl_uefi_x64[vbs](vhd(windows_datacenter_core_2025_x64_prepped)),
     openvmm_openhcl_uefi_x64[vbs](vhd(ubuntu_2504_server_x64)),
-    unstable(reason = "Hyper-V VBS failures are not currently actionable.", hyperv_openhcl_uefi_x64[vbs](vhd(ubuntu_2504_server_x64))),
+    hyperv_openhcl_uefi_x64[vbs](vhd(ubuntu_2504_server_x64)),
     hyperv_openhcl_uefi_x64[tdx](vhd(ubuntu_2504_server_x64)),
     hyperv_openhcl_uefi_x64[snp](vhd(ubuntu_2504_server_x64))
 )]
@@ -873,7 +873,7 @@ async fn reboot_multisocket(config: PetriVmBuilder<OpenVmmPetriBackend>) -> anyh
 
 /// Configure Guest VSM and reboot the VM to verify it works.
 #[vmm_test(
-    unstable(reason = "Hyper-V VBS failures are not currently actionable.", hyperv_openhcl_uefi_x64[vbs](vhd(windows_datacenter_core_2025_x64_prepped))),
+    hyperv_openhcl_uefi_x64[vbs](vhd(windows_datacenter_core_2025_x64_prepped)),
     hyperv_openhcl_uefi_x64[snp](vhd(windows_datacenter_core_2025_x64_prepped)),
     hyperv_openhcl_uefi_x64[tdx](vhd(windows_datacenter_core_2025_x64_prepped)),
 )]
