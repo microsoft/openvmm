@@ -43,7 +43,8 @@ fn legacy_drain_threshold_wakes_a_blocked_writer_after_wraparound() {
 }
 
 // Test: Publish a complete descriptor and payload with and without its trailing offset word.
-// Expected: Complete packets retain their payload, while a missing trailer is rejected before consumption.
+// Expected: Complete packets retain their payload; a missing trailer is rejected
+//       without advancing the read cursor.
 #[test]
 #[ignore = "Confirmed product bug: packets without a published trailer are accepted and advance past available data"]
 fn known_bug_peer_packet_requires_the_trailer_before_it_can_be_consumed() {
@@ -83,6 +84,12 @@ fn known_bug_peer_packet_requires_the_trailer_before_it_can_be_consumed() {
                     assert!(
                         received.is_err(),
                         "accepted packet without trailer at {start}"
+                    );
+                    assert_eq!(incoming.next_out, start as u32);
+                    assert!(!reader.commit_read(&mut incoming));
+                    assert_eq!(
+                        Control(memory.control()).outp().load(Ordering::SeqCst),
+                        start as u32
                     );
                 }
             }

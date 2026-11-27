@@ -523,9 +523,16 @@ fn check_memory_boundaries(memory: impl RingMem + Sync) {
         memory.read_at(address, &mut received);
         assert_eq!(received.as_slice(), payload);
     }
-    let payload = [0x9a; 32];
-    for address in [PAGE_SIZE - 8, len - 8, len + 8] {
+    for (sequence, address) in [PAGE_SIZE - 8, len - 8, len + 8].into_iter().enumerate() {
+        let payload: [u8; 32] =
+            core::array::from_fn(|offset| (0x80 + sequence * 32 + offset) as u8);
         memory.write_aligned(address, &payload);
+        for (offset, value) in payload.iter().enumerate() {
+            expected[(address + offset) % len] = *value;
+        }
+        let mut received = vec![0; len];
+        memory.read_at(0, &mut received);
+        assert_eq!(received, expected);
         let mut received = [0; 32];
         memory.read_aligned(address, &mut received);
         assert_eq!(received, payload);
