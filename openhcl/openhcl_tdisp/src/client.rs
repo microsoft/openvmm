@@ -79,8 +79,8 @@ impl TdispClient {
     ///   assigned to, which decides the guest protocol to negotiate.
     /// * `target_vtl` - The VTL the device is assigned to.
     /// * `bar_masks` - Which BARs the device implements.
-    /// * `allow_unattested_devices` - Allow the device without TDISP attestation,
-    ///   skipping the steps that need it.
+    /// * `allow_unattested_devices` - Measured policy temporarily allowing VBS
+    ///   devices without TDISP attestation. Must be false for SNP and TDX.
     pub fn new(
         transport: Box<dyn TdispCommandTransport>,
         resource_validator: Arc<dyn TdispResourceValidationInterface>,
@@ -123,6 +123,10 @@ impl TdispClient {
     /// the device supports TDISP and a guest protocol that matches the
     /// partition's isolation type, and otherwise an error saying why the device
     /// is not suitable for TDISP.
+    ///
+    /// With the temporary unattested VBS policy enabled, returns a placeholder
+    /// with an Invalid protocol, no features, and device ID zero instead of
+    /// querying the host. This is not evidence of TDISP support or attestation.
     pub async fn query_capabilities(&self) -> anyhow::Result<TdispDeviceInterfaceInfo> {
         self.0.lock().await.query_capabilities().await
     }
@@ -133,6 +137,9 @@ impl TdispClient {
     ///
     /// Device resources are not accessible on return. They are unblocked later,
     /// when the guest enables MMIO.
+    ///
+    /// With the temporary unattested VBS policy enabled, only prepares the
+    /// local activation state. No attestation or report retrieval occurs.
     ///
     /// * `interface_info` - The negotiated capabilities for this device.
     pub async fn attest(&self, interface_info: TdispDeviceInterfaceInfo) -> anyhow::Result<()> {
@@ -327,8 +334,8 @@ struct TdispClientState {
     /// Platform hooks used to gate attestation and unblock device resources.
     #[inspect(skip)]
     resource_validator: Arc<dyn TdispResourceValidationInterface>,
-    /// Allow the device without TDISP attestation, skipping the steps that
-    /// need it.
+    /// Temporary measured policy for unattested VBS devices; false for SNP/TDX.
+    /// Remove this flag and its bypass helpers when VBS supports TDISP.
     allow_unattested_devices: bool,
 }
 
@@ -341,6 +348,13 @@ impl TdispClientState {
         bar_masks: [bool; 6],
         allow_unattested_devices: bool,
     ) -> Self {
+        if matches!(isolation_type, IsolationType::Snp | IsolationType::Tdx) {
+            assert!(
+                !allow_unattested_devices,
+                "allow_unattested_devices must be false for SNP and TDX"
+            );
+        }
+
         Self {
             transport,
             mutable_state: TdispClientMutableState {
@@ -505,11 +519,6 @@ impl TdispClientState {
     /// state exists to keep the device from modifying its resources between
     /// the bind and attestation.
     async fn bind_interface(&mut self) -> anyhow::Result<()> {
-        if self.allow_unattested_devices {
-            self.mutable_state.update_tdi_state(TdispTdiState::Locked);
-            return Ok(());
-        }
-
         let state_before = self.tdi_state();
         let res = self
             .send_command(crate::new_bind_command(self.transport.bus_device_id()))
@@ -543,11 +552,6 @@ impl TdispClientState {
     /// Start a bound device, transitioning the TDI from Locked to Run. This is
     /// the point from which resources can be accepted into the guest context.
     async fn start_device(&mut self) -> anyhow::Result<()> {
-        if self.allow_unattested_devices {
-            self.mutable_state.update_tdi_state(TdispTdiState::Run);
-            return Ok(());
-        }
-
         let state_before = self.tdi_state();
         let res = self
             .send_command(crate::new_start_tdi_command(self.transport.bus_device_id()))
@@ -890,18 +894,15 @@ impl TdispClientState {
             "querying TDISP capabilities for device given VM isolation type"
         );
 
-        if self.allow_unattested_devices {
-            return Ok(TdispDeviceInterfaceInfo::default());
-        }
-
         let target_protocol = match self.isolation_type {
             IsolationType::Snp => TdispGuestProtocolType::AmdSevTioV1,
             IsolationType::Tdx => TdispGuestProtocolType::IntelTdxConnectV1,
             IsolationType::Vbs => {
-                tracing::warn!(
-                    "query_capabilities: VM is running with VBS isolation (NOT SUPPORTED)"
+                anyhow::ensure!(
+                    self.allow_unattested_devices,
+                    "VBS requires policy permission for unattested devices"
                 );
-                anyhow::bail!("VBS isolation is not currently supported for TDISP")
+                return Ok(Self::unattested_vbs_interface_info());
             }
             IsolationType::Cca => {
                 tracing::warn!(
@@ -953,6 +954,10 @@ impl TdispClientState {
     ///
     /// * `interface_info` - The negotiated capabilities for this device.
     async fn attest(&mut self, interface_info: TdispDeviceInterfaceInfo) -> anyhow::Result<()> {
+        if self.allow_unattested_devices {
+            return self.prepare_unattested_device(interface_info);
+        }
+
         // Allow fast path if the device is already in `Run` state so that an entire attestation isn't run again.
         // Only allow this if the firmware specifically validates that the device is in the proper state before
         // continuing, else we risk a malicious host attempting to desync our state.
@@ -982,6 +987,47 @@ impl TdispClientState {
                 ));
             }
         }
+
+        Ok(())
+    }
+
+    /// Placeholder for the temporary VBS path, not host-discovered capabilities.
+    /// The protocol is Invalid, features are absent, and the device ID is zero.
+    /// The VBS validator ignores this ID and uses its stored logical device ID.
+    fn unattested_vbs_interface_info() -> TdispDeviceInterfaceInfo {
+        TdispDeviceInterfaceInfo::default()
+    }
+
+    /// Temporary VBS preparation without host bind/start commands or a report.
+    /// Synthetic TDI states preserve the existing MMIO activation contract;
+    /// they do not mean that the device has been attested. DMA remains blocked
+    /// until on_mmio_reconfigured calls unblock_unattested_dma.
+    fn prepare_unattested_device(
+        &mut self,
+        interface_info: TdispDeviceInterfaceInfo,
+    ) -> anyhow::Result<()> {
+        if self.tdi_state() == TdispTdiState::Run {
+            return Ok(());
+        }
+
+        let device_id = u16::try_from(interface_info.tdisp_device_id)
+            .context("unattested device ID must fit within u16")?;
+        self.mutable_state
+            .update_guest_device_id(TdispDeviceId::Valid(device_id));
+
+        self.resource_validator
+            .on_pre_bind(self.target_vtl, device_id)
+            .context("unattested device pre-bind validation failed")?;
+        self.mutable_state.update_tdi_state(TdispTdiState::Locked);
+
+        self.resource_validator
+            .on_pre_start(self.target_vtl, device_id)
+            .context("unattested device pre-start validation failed")?;
+        self.mutable_state.update_tdi_state(TdispTdiState::Run);
+
+        self.resource_validator
+            .on_post_start(self.target_vtl, device_id)
+            .context("unattested device post-start validation failed")?;
 
         Ok(())
     }
@@ -1103,10 +1149,6 @@ impl TdispClientState {
                 reason: TdispGuestUnbindReason::StartupFailure,
                 message: format!("tdisp_attest_device: post-start validation failed: {}", e),
             })?;
-
-        if self.allow_unattested_devices {
-            return Ok(());
-        }
 
         // Fetch and save the TDI interface report so callers can inspect the
         // attested device's reported capabilities and MMIO ranges.
@@ -1274,18 +1316,7 @@ impl TdispClientState {
 
         if self.allow_unattested_devices {
             // There's no TDI report to classify the BAR by, so only unblock DMA.
-            if !self.mutable_state.dma_unblocked {
-                let device_id = self
-                    .mutable_state
-                    .guest_device_id
-                    .id()
-                    .context("tdisp_on_mmio_reconfigured: no TDI device id is known")?;
-                self.resource_validator
-                    .tdisp_unblock_dma(self.target_vtl, device_id)
-                    .context("tdisp_on_mmio_reconfigured: failed to unblock DMA")?;
-                self.mutable_state.dma_unblocked = true;
-            }
-            return Ok(());
+            return self.unblock_unattested_dma();
         }
 
         if self.mutable_state.validated_mmio_bars.contains_key(&bar_id) {
@@ -1405,6 +1436,23 @@ impl TdispClientState {
                 "tdisp_on_mmio_reconfigured: skipping DMA unblock, already unblocked this \
                  bind/attest cycle: device_id={device_id:#x}"
             );
+        }
+
+        Ok(())
+    }
+    /// Temporary DMA-only authorization without a TDI report or BAR validation.
+    /// Authorization persists across unbind; a failed authorization can retry.
+    fn unblock_unattested_dma(&mut self) -> anyhow::Result<()> {
+        if !self.mutable_state.dma_unblocked {
+            let device_id = self
+                .mutable_state
+                .guest_device_id
+                .id()
+                .context("tdisp_on_mmio_reconfigured: no TDI device id is known")?;
+            self.resource_validator
+                .tdisp_unblock_dma(self.target_vtl, device_id)
+                .context("tdisp_on_mmio_reconfigured: failed to unblock DMA")?;
+            self.mutable_state.dma_unblocked = true;
         }
 
         Ok(())
@@ -1619,6 +1667,70 @@ mod tests {
         assert_eq!(dma, TdispResourceIsolation::Private);
     }
 
+    #[derive(Inspect)]
+    struct RejectingTransport;
+
+    impl TdispCommandTransport for RejectingTransport {
+        fn bus_device_id(&self) -> u64 {
+            0
+        }
+
+        fn send_command<'a>(
+            &'a self,
+            _command: GuestToHostCommand,
+        ) -> Pin<Box<dyn Future<Output = anyhow::Result<GuestToHostResponse>> + Send + Sync + 'a>>
+        {
+            Box::pin(async { anyhow::bail!("test host rejected capability query") })
+        }
+    }
+
+    #[test]
+    fn vbs_requires_explicit_unattested_device_permission() {
+        let mut state = new_state();
+        state.isolation_type = IsolationType::Vbs;
+
+        let error = futures::executor::block_on(state.query_capabilities()).unwrap_err();
+        assert_eq!(
+            error.to_string(),
+            "VBS requires policy permission for unattested devices"
+        );
+        assert_eq!(state.tdi_state(), TdispTdiState::Unlocked);
+        assert_eq!(state.mutable_state.guest_device_id, TdispDeviceId::Invalid);
+    }
+
+    #[test]
+    fn unattested_device_permission_is_rejected_for_snp_and_tdx() {
+        for isolation_type in [IsolationType::Snp, IsolationType::Tdx] {
+            let result = std::panic::catch_unwind(|| {
+                TdispClientState::new(
+                    Box::new(PanickingTransport),
+                    Arc::new(crate::noop::TdispNoopResourceValidator::new()),
+                    isolation_type,
+                    Vtl::Vtl0,
+                    [false; 6],
+                    true,
+                )
+            });
+            assert!(
+                result.is_err(),
+                "enabled unattested-device policy was accepted for {isolation_type:?}"
+            );
+
+            let mut state = TdispClientState::new(
+                Box::new(RejectingTransport),
+                Arc::new(crate::noop::TdispNoopResourceValidator::new()),
+                isolation_type,
+                Vtl::Vtl0,
+                [false; 6],
+                false,
+            );
+
+            assert!(!state.allow_unattested_devices);
+            let error = futures::executor::block_on(state.query_capabilities()).unwrap_err();
+            assert!(format!("{error:#}").contains("test host rejected capability query"));
+        }
+    }
+
     /// With the host checks bypassed, attestation sends the host no TDISP
     /// command, and DMA is unblocked and stays unblocked across an unbind.
     #[test]
@@ -1634,15 +1746,31 @@ mod tests {
         );
         futures::executor::block_on(async {
             let info = state.query_capabilities().await.unwrap();
+            assert_eq!(info.guest_protocol_type, 0);
+            assert_eq!(info.supported_features, 0);
+            assert_eq!(info.tdisp_device_id, 0);
             state.attest(info).await.unwrap();
             assert_eq!(state.tdi_state(), TdispTdiState::Run);
+            assert!(state.mutable_state.tdi_report.is_none());
+            assert!(!validator.dma_unblocked());
+            assert!(validator.unblocked_mmio_ranges().is_empty());
+            let info = state.query_capabilities().await.unwrap();
+            state.attest(info).await.unwrap();
             state
                 .on_mmio_reconfigured(0, 0x1000_0000, 0x1000)
                 .await
                 .unwrap();
             assert!(validator.dma_unblocked());
+            assert!(validator.unblocked_mmio_ranges().is_empty());
             state.unbind(TdispGuestUnbindReason::Graceful).await;
             assert!(validator.dma_unblocked());
+            assert_eq!(state.tdi_state(), TdispTdiState::Run);
+            state
+                .on_mmio_reconfigured(1, 0x2000_0000, 0x1000)
+                .await
+                .unwrap();
+            assert!(validator.dma_unblocked());
+            assert!(validator.unblocked_mmio_ranges().is_empty());
         });
     }
 }
