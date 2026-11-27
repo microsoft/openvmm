@@ -80,6 +80,7 @@ enum VfManagerSaveResult {
     Saved(ManaSavedState),
     DeviceMissing,
     SaveFailed,
+    NoSavedState,
 }
 
 fn discard_pending_mana_buffers(dma_clients: &VfioDmaClients) -> anyhow::Result<()> {
@@ -1135,7 +1136,7 @@ impl HclNetworkVFManagerWorker {
                     .await;
 
                 match saved_state {
-                    Ok(saved_state) => {
+                    Ok(Some(saved_state)) => {
                         // Closing the VFIO device handle can take a long time.
                         // Leak the handle by stashing it away.
                         std::mem::forget(device);
@@ -1148,6 +1149,11 @@ impl HclNetworkVFManagerWorker {
                             mana_device: saved_state,
                             pci_id: self.vtl2_pci_id.clone(),
                         })
+                    }
+                    Ok(None) => {
+                        tracing::info!(vtl2_vfid, "skipping saved state");
+                        drop(device);
+                        VfManagerSaveResult::NoSavedState
                     }
                     Err(err) => {
                         tracing::error!(
@@ -2068,6 +2074,10 @@ impl HclNetworkVFManager {
             }
             Ok(VfManagerSaveResult::SaveFailed) => {
                 tracing::error!("MANA device present but save failed");
+                None
+            }
+            Ok(VfManagerSaveResult::NoSavedState) => {
+                tracing::info!("No MANA device state to save, restore will reinitialize");
                 None
             }
             Err(err) => {
