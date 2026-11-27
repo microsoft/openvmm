@@ -224,6 +224,16 @@ impl AsyncResolveResource<VmbusDeviceHandleKind, GuestEmulationDeviceHandle>
                 },
                 force_dma_bounce_enabled: resource.force_dma_bounce_enabled,
                 smbios: resource.smbios,
+                uefi_overload_images: resource
+                    .uefi_overload_images
+                    .into_iter()
+                    .map(|image| crate::UefiOverloadImage {
+                        token: image.token,
+                        base_gpa: image.base_gpa,
+                        entry_offset: image.entry_offset,
+                        image: image.image.into(),
+                    })
+                    .collect(),
             },
             halt,
             resource.firmware_event_send,

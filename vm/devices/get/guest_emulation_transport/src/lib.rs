@@ -915,12 +915,48 @@ mod tests {
 
     #[async_test]
     async fn test_load_firmware(driver: DefaultDriver) {
+        use guest_emulation_device::test_utilities::TEST_UEFI_FIRMWARE_ENTRY_OFFSET;
+        use guest_emulation_device::test_utilities::TEST_UEFI_FIRMWARE_GPA;
+        use guest_emulation_device::test_utilities::TEST_UEFI_FIRMWARE_IMAGE;
+        use guest_emulation_device::test_utilities::TEST_UEFI_FIRMWARE_TOKEN;
+
         // LoadFirmware is a REV2 host request whose availability the host
         // advertises via the `load_firmware_supported` DPS feature bit; the
         // transport itself just issues the request and returns the entry offset.
+        let gm = guestmem::GuestMemory::allocate(0x2000);
+        let get = new_transport_pair(
+            driver,
+            None,
+            ProtocolVersion::NICKEL_REV2,
+            Some(gm.clone()),
+            None,
+        )
+        .await;
+
+        let entry_offset = get
+            .client
+            .load_firmware(TEST_UEFI_FIRMWARE_TOKEN)
+            .await
+            .unwrap();
+        assert_eq!(entry_offset, TEST_UEFI_FIRMWARE_ENTRY_OFFSET);
+        let mut written = vec![0; TEST_UEFI_FIRMWARE_IMAGE.len()];
+        gm.read_at(TEST_UEFI_FIRMWARE_GPA, &mut written).unwrap();
+        assert_eq!(written, TEST_UEFI_FIRMWARE_IMAGE);
+
+        let err = get.client.load_firmware(0x0107).await.unwrap_err();
+        assert_eq!(err.0, get_protocol::LoadFirmwareStatus::INVALID_TOKEN);
+    }
+
+    #[async_test]
+    async fn test_load_firmware_write_failure(driver: DefaultDriver) {
+        // Without guest memory to write the image into, a known token fails.
         let get = new_transport_pair(driver, None, ProtocolVersion::NICKEL_REV2, None, None).await;
 
-        let entry_offset = get.client.load_firmware(0x0107).await.unwrap();
-        assert_eq!(entry_offset, 0);
+        let err = get
+            .client
+            .load_firmware(guest_emulation_device::test_utilities::TEST_UEFI_FIRMWARE_TOKEN)
+            .await
+            .unwrap_err();
+        assert_eq!(err.0, get_protocol::LoadFirmwareStatus::FAILED);
     }
 }
