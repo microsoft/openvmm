@@ -7112,6 +7112,7 @@ name = "pipette_protocol"
 version = "0.0.0"
 dependencies = [
  "mesh",
+ "test_with_tracing",
 ]
 
 [[package]]

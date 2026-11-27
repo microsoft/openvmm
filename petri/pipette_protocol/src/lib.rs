@@ -227,3 +227,86 @@ pub struct DiagnosticFile {
     /// The receiver of the contents of the file.
     pub receiver: ReadPipe,
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use test_with_tracing::test;
+
+    // Test: Format execute requests with every combination of stdin, stdout and
+    //       stderr pipes present or absent, plus every other request field.
+    // Expected: Each pipe appears only as a presence flag matching the request,
+    //       and every other field appears under its own name with its value,
+    //       including both set and removed environment variables.
+    #[test]
+    fn execute_request_debug_summarizes_pipes() {
+        for mask in 0..8u8 {
+            let (stdin, _stdin_writer) = mesh::pipe::pipe();
+            let (_stdout_reader, stdout) = mesh::pipe::pipe();
+            let (_stderr_reader, stderr) = mesh::pipe::pipe();
+            let request = ExecuteRequest {
+                program: "/bin/sh".into(),
+                args: vec!["-c".into(), "true".into()],
+                current_dir: Some("/tmp".into()),
+                stdin: (mask & 1 != 0).then_some(stdin),
+                stdout: (mask & 2 != 0).then_some(stdout),
+                stderr: (mask & 4 != 0).then_some(stderr),
+                env: vec![
+                    EnvPair {
+                        name: "SET".into(),
+                        value: Some("1".into()),
+                    },
+                    EnvPair {
+                        name: "GONE".into(),
+                        value: None,
+                    },
+                ],
+                clear_env: true,
+                chroot: Some("/root".into()),
+                allocate_pty: true,
+                combine_stderr: false,
+            };
+            let text = format!("{request:?}");
+            // The leading space and trailing comma keep "stderr" from also
+            // matching inside "combine_stderr".
+            for (name, bit) in [("stdin", 1), ("stdout", 2), ("stderr", 4)] {
+                let flag = format!(" {name}: {},", mask & bit != 0);
+                assert!(text.contains(&flag), "{flag} missing: {text}");
+            }
+            for expected in [
+                r#"program: "/bin/sh""#,
+                r#"args: ["-c", "true"]"#,
+                r#"current_dir: Some("/tmp")"#,
+                r#"env: [EnvPair { name: "SET", value: Some("1") }, EnvPair { name: "GONE", value: None }]"#,
+                "clear_env: true",
+                r#"chroot: Some("/root")"#,
+                "allocate_pty: true",
+                "combine_stderr: false",
+            ] {
+                assert!(text.contains(expected), "{expected} missing: {text}");
+            }
+        }
+    }
+
+    // Test: Convert wait statuses for a normal exit, a signal death and a
+    //       stopped (neither exited nor signaled) process.
+    // Expected: They map to Normal(code), Signal(number) and Unknown.
+    #[cfg(unix)]
+    #[test]
+    fn exit_statuses_map_codes_signals_and_unknown() {
+        use std::os::unix::process::ExitStatusExt;
+        // Raw values are Unix wait statuses: an exit code sits in bits 8-15,
+        // a killing signal sits in the low 7 bits, and a low byte of 0x7f
+        // means the process was stopped by the signal in bits 8-15. Signal 9
+        // is SIGKILL and 19 is SIGSTOP on Linux.
+        let convert = |raw| ExitStatus::from(std::process::ExitStatus::from_raw(raw));
+        let status = convert(7 << 8);
+        assert!(matches!(status, ExitStatus::Normal(7)), "{status:?}");
+        let status = convert(0);
+        assert!(matches!(status, ExitStatus::Normal(0)), "{status:?}");
+        let status = convert(9);
+        assert!(matches!(status, ExitStatus::Signal(9)), "{status:?}");
+        let status = convert((19 << 8) | 0x7f);
+        assert!(matches!(status, ExitStatus::Unknown), "{status:?}");
+    }
+}
