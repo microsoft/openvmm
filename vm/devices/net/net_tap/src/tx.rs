@@ -7,6 +7,7 @@
 //! completes all of them, including the packets that the interface drops.
 
 use crate::TapQueue;
+use crate::VirtioNetHdr;
 use crate::build_vnet_hdr;
 use crate::fixup_gso_pseudo_header;
 use crate::fixup_ipv4_header_checksum;
@@ -15,11 +16,17 @@ use net_backend::BufferAccess;
 use net_backend::TxError;
 use net_backend::TxId;
 use net_backend::TxSegment;
+use net_backend::VlanMetadata;
 use net_backend::linearize;
 use net_backend::next_packet;
 use std::io::ErrorKind;
 use std::io::Write;
 use zerocopy::IntoBytes;
+
+/// The destination and source MAC addresses, which an 802.1Q tag follows.
+const ETHERNET_ADDRESSES_LEN: usize = 12;
+const ETH_P_8021Q: u16 = 0x8100;
+const VLAN_TAG_LEN: u16 = 4;
 
 impl TapQueue {
     /// Implements `tx_avail`: writes the packets of `segments`.
@@ -33,8 +40,7 @@ impl TapQueue {
         if let Some(tap) = self.tap.as_mut() {
             while !segments.is_empty() {
                 let (meta, _segs, _rest) = next_packet(segments);
-                let hdr = build_vnet_hdr(meta);
-                let hdr_bytes = hdr.as_bytes();
+                let mut hdr = build_vnet_hdr(meta);
                 let mut packet = linearize(pool, segments)?;
 
                 // Fix up the IPv4 header checksum when the frontend
@@ -68,15 +74,33 @@ impl TapQueue {
                     fixup_gso_pseudo_header(&mut packet, meta.l2_len as usize);
                 }
 
+                // A vnet header has no field for the tag, so the frame carries it. The
+                // fixups above index the untagged frame, so this comes after them. A frame
+                // too short to hold an Ethernet header stays as it is for the kernel to refuse.
+                let tag = meta
+                    .vlan
+                    .filter(|_| packet.len() >= net_backend::ETHERNET_HEADER_LEN as usize)
+                    .map(wire_vlan_tag);
+                if tag.is_some() {
+                    shift_vnet_hdr_for_tag(&mut hdr);
+                }
+                let (macs, after_macs) = packet.split_at(if tag.is_some() {
+                    ETHERNET_ADDRESSES_LEN
+                } else {
+                    0
+                });
+                let hdr_bytes = hdr.as_bytes();
                 let bufs = [
                     std::io::IoSlice::new(hdr_bytes),
-                    std::io::IoSlice::new(&packet),
+                    std::io::IoSlice::new(macs),
+                    std::io::IoSlice::new(tag.as_ref().map_or(&[], |tag| tag.as_slice())),
+                    std::io::IoSlice::new(after_macs),
                 ];
                 match tap.write_vectored(&bufs) {
                     Ok(bytes_written) => {
                         assert_eq!(
                             bytes_written,
-                            hdr_bytes.len() + packet.len(),
+                            hdr_bytes.len() + packet.len() + tag.map_or(0, |tag| tag.len()),
                             "TAP should never partial write"
                         );
                     }
@@ -108,5 +132,29 @@ impl TapQueue {
         // Packets are sent synchronously so there is no no need to check here if
         // sending has been completed.
         Ok(0)
+    }
+}
+
+/// An 802.1Q tag as it sits in a frame: TPID, then TCI, both big-endian.
+///
+/// [`VlanMetadata`] holds the priority in its low bits and the wire in its high bits, so its raw
+/// bits are not the TCI.
+fn wire_vlan_tag(vlan: VlanMetadata) -> [u8; 4] {
+    let tci = (u16::from(vlan.priority()) << 13)
+        | (u16::from(vlan.drop_eligible_indicator()) << 12)
+        | vlan.vlan_id();
+    let [tpid_hi, tpid_lo] = ETH_P_8021Q.to_be_bytes();
+    let [tci_hi, tci_lo] = tci.to_be_bytes();
+    [tpid_hi, tpid_lo, tci_hi, tci_lo]
+}
+
+/// Moves a vnet header's offsets past a tag inserted after the MAC addresses. `gso_size` counts
+/// payload, so it stays.
+fn shift_vnet_hdr_for_tag(hdr: &mut VirtioNetHdr) {
+    if hdr.flags.needs_csum() {
+        hdr.csum_start = hdr.csum_start.saturating_add(VLAN_TAG_LEN);
+    }
+    if hdr.hdr_len != 0 {
+        hdr.hdr_len = hdr.hdr_len.saturating_add(VLAN_TAG_LEN);
     }
 }
