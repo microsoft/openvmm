@@ -630,15 +630,17 @@ async fn test_ttrpc_interface(
     let pipette_initrd_file = pipette_initrd(tempdir.path(), &initrd_path, &pipette_path)?;
     let console = linux_console();
 
-    let (mut child, client, stderr_task) =
+    let (mut child, mut client, mut stderr_task) =
         launch_openvmm(&driver, &params, &openvmm, &socket_path, &pidfile_path).await?;
 
-    let query_props = || {
-        client.call().start(
-            vmservice::Vm::PropertiesVm,
-            vmservice::PropertiesVmRequest { types: Vec::new() },
-        )
-    };
+    macro_rules! query_props {
+        () => {
+            client.call().start(
+                vmservice::Vm::PropertiesVm,
+                vmservice::PropertiesVmRequest { types: Vec::new() },
+            )
+        };
+    }
 
     let caps = client
         .call()
@@ -665,7 +667,7 @@ async fn test_ttrpc_interface(
         "only Linux direct boot is supported"
     );
 
-    let props = query_props().await.unwrap();
+    let props = query_props!().await.unwrap();
     assert_eq!(
         props.state,
         vmservice::VmState::Uninitialized as i32,
@@ -683,7 +685,7 @@ async fn test_ttrpc_interface(
         )
         .await
         .unwrap_err();
-    let props = query_props().await.unwrap();
+    let props = query_props!().await.unwrap();
     assert_eq!(
         props.state,
         vmservice::VmState::Uninitialized as i32,
@@ -1139,7 +1141,7 @@ async fn test_ttrpc_interface(
             );
         }
 
-        let props = query_props().await.unwrap();
+        let props = query_props!().await.unwrap();
         assert_eq!(
             props.state,
             vmservice::VmState::Paused as i32,
@@ -1150,60 +1152,91 @@ async fn test_ttrpc_interface(
             "memory/processor stats should be unset, not zeroed"
         );
 
-        // Invalid options exercise Consomme update/remove without binding a port.
-        for modify_type in [vmservice::ModifyType::Update, vmservice::ModifyType::Remove] {
-            for (protocol, host_address, expected_error) in [
-                (99, "", "invalid protocol"),
-                (
-                    vmservice::IpProtocol::Tcp as i32,
-                    "not-an-ip-address",
-                    "invalid host address",
-                ),
-                (
-                    vmservice::IpProtocol::Udp as i32,
-                    "127.0.0.1:8080",
-                    "invalid host address",
-                ),
-            ] {
-                let err = client
-                    .call()
-                    .start(
-                        vmservice::Vm::ModifyResource,
-                        vmservice::ModifyResourceRequest {
-                            r#type: modify_type as i32,
-                            resource: Some(
-                                vmservice::modify_resource_request::Resource::NicConfig(
-                                    vmservice::NicConfig {
-                                        nic_id: consomme_nic_id.clone(),
-                                        mac_address: "00-15-5D-12-12-12".to_string(),
-                                        backend: Some(vmservice::nic_config::Backend::Consomme(
-                                            vmservice::ConsommeBackend {
-                                                cidr: String::new(),
-                                                ports: vec![vmservice::PortConfig {
-                                                    host_port: 8080,
-                                                    guest_port: 80,
-                                                    protocol,
-                                                    host_address: host_address.to_string(),
-                                                }],
-                                                internal_dns: None,
-                                                ..Default::default()
-                                            },
-                                        )),
-                                        ..Default::default()
-                                    },
-                                ),
-                            ),
+        // Builds a Consomme port update or removal for the test NIC.
+        let consomme_port_change =
+            |modify_type: vmservice::ModifyType, protocol: i32, host_address: &str| {
+                vmservice::ModifyResourceRequest {
+                    r#type: modify_type as i32,
+                    resource: Some(vmservice::modify_resource_request::Resource::NicConfig(
+                        vmservice::NicConfig {
+                            nic_id: consomme_nic_id.clone(),
+                            mac_address: "00-15-5D-12-12-12".to_string(),
+                            backend: Some(vmservice::nic_config::Backend::Consomme(
+                                vmservice::ConsommeBackend {
+                                    cidr: String::new(),
+                                    ports: vec![vmservice::PortConfig {
+                                        host_port: 8080,
+                                        guest_port: 80,
+                                        protocol,
+                                        host_address: host_address.to_string(),
+                                    }],
+                                    internal_dns: None,
+                                    ..Default::default()
+                                },
+                            )),
+                            ..Default::default()
                         },
-                    )
-                    .await
-                    .unwrap_err();
-                assert!(
-                    err.message.contains(expected_error),
-                    "expected {expected_error}, got: {}",
-                    err.message
-                );
-            }
+                    )),
+                }
+            };
+
+        // Consomme port changes are serviced by the NIC's queue processing,
+        // which doesn't run while the VM is paused, so they are rejected until
+        // the VM runs. Port validation is exercised once the VM is running.
+        for modify_type in [vmservice::ModifyType::Update, vmservice::ModifyType::Remove] {
+            let err = client
+                .call()
+                .start(
+                    vmservice::Vm::ModifyResource,
+                    consomme_port_change(modify_type, vmservice::IpProtocol::Tcp as i32, ""),
+                )
+                .await
+                .unwrap_err();
+            assert_eq!(
+                err.code,
+                mesh_rpc::service::Code::FailedPrecondition as i32,
+                "consomme port change while paused: {}",
+                err.message
+            );
         }
+
+        // DNS record changes are serviced the same way, so they are rejected
+        // while paused too.
+        let err = client
+            .call()
+            .start(
+                vmservice::Vm::ModifyResource,
+                vmservice::ModifyResourceRequest {
+                    r#type: vmservice::ModifyType::Update as i32,
+                    resource: Some(vmservice::modify_resource_request::Resource::NicConfig(
+                        vmservice::NicConfig {
+                            nic_id: consomme_nic_id.clone(),
+                            backend: Some(vmservice::nic_config::Backend::Consomme(
+                                vmservice::ConsommeBackend {
+                                    operation: Some(
+                                        vmservice::consomme_backend::Operation::AddDnsRecord(
+                                            vmservice::AddDnsRecordRequest {
+                                                name: "host.example".to_string(),
+                                                address: "192.0.2.1".to_string(),
+                                            },
+                                        ),
+                                    ),
+                                    ..Default::default()
+                                },
+                            )),
+                            ..Default::default()
+                        },
+                    )),
+                },
+            )
+            .await
+            .unwrap_err();
+        assert_eq!(
+            err.code,
+            mesh_rpc::service::Code::FailedPrecondition as i32,
+            "consomme DNS record change while paused: {}",
+            err.message
+        );
 
         // On iteration 0, exercise AddPcieDevice/RemovePcieDevice with
         // both a simple virtio device and one with a host backend.
@@ -1415,7 +1448,7 @@ async fn test_ttrpc_interface(
                     .await
                     .unwrap();
 
-                let props = query_props().await.unwrap();
+                let props = query_props!().await.unwrap();
                 assert_eq!(
                     props.state,
                     vmservice::VmState::Running as i32,
@@ -1473,7 +1506,7 @@ async fn test_ttrpc_interface(
 
                 waiter.await.unwrap();
 
-                let props = query_props().await.unwrap();
+                let props = query_props!().await.unwrap();
                 assert_eq!(
                     props.state,
                     vmservice::VmState::Halted as i32,
@@ -1512,7 +1545,7 @@ async fn test_ttrpc_interface(
                         .await
                         .context("timed out reading virtio console output")??;
 
-                    let props = query_props().await.unwrap();
+                    let props = query_props!().await.unwrap();
                     assert_eq!(
                         props.state,
                         vmservice::VmState::Uninitialized as i32,
@@ -1539,7 +1572,7 @@ async fn test_ttrpc_interface(
                     .await
                     .unwrap();
 
-                let props = query_props().await.unwrap();
+                let props = query_props!().await.unwrap();
                 assert_eq!(
                     props.state,
                     vmservice::VmState::Running as i32,
@@ -1551,12 +1584,44 @@ async fn test_ttrpc_interface(
                     .wait_for("job control turned off", 0, SERIAL_BOOT_TIMEOUT)
                     .await?;
 
+                // Invalid options exercise Consomme update/remove without
+                // binding a port.
+                for modify_type in [vmservice::ModifyType::Update, vmservice::ModifyType::Remove] {
+                    for (protocol, host_address, expected_error) in [
+                        (99, "", "invalid protocol"),
+                        (
+                            vmservice::IpProtocol::Tcp as i32,
+                            "not-an-ip-address",
+                            "invalid host address",
+                        ),
+                        (
+                            vmservice::IpProtocol::Udp as i32,
+                            "127.0.0.1:8080",
+                            "invalid host address",
+                        ),
+                    ] {
+                        let err = client
+                            .call()
+                            .start(
+                                vmservice::Vm::ModifyResource,
+                                consomme_port_change(modify_type, protocol, host_address),
+                            )
+                            .await
+                            .unwrap_err();
+                        assert!(
+                            err.message.contains(expected_error),
+                            "expected {expected_error}, got: {}",
+                            err.message
+                        );
+                    }
+                }
+
                 client
                     .call()
                     .start(vmservice::Vm::PauseVm, ())
                     .await
                     .unwrap();
-                let props = query_props().await.unwrap();
+                let props = query_props!().await.unwrap();
                 assert_eq!(
                     props.state,
                     vmservice::VmState::Paused as i32,
@@ -1567,7 +1632,7 @@ async fn test_ttrpc_interface(
                     .start(vmservice::Vm::ResumeVm, ())
                     .await
                     .unwrap();
-                let props = query_props().await.unwrap();
+                let props = query_props!().await.unwrap();
                 assert_eq!(
                     props.state,
                     vmservice::VmState::Running as i32,
@@ -1597,7 +1662,7 @@ async fn test_ttrpc_interface(
                     std::fs::read_dir(&snapshot_path).unwrap().next().is_none(),
                     "a rejected SaveVm must not write into the existing directory"
                 );
-                let props = query_props().await.unwrap();
+                let props = query_props!().await.unwrap();
                 assert_eq!(
                     props.state,
                     vmservice::VmState::Running as i32,
@@ -1629,11 +1694,16 @@ async fn test_ttrpc_interface(
                         "SaveVm should create {name}"
                     );
                 }
-                let props = query_props().await.unwrap();
+                let props = query_props!().await.unwrap();
                 assert_eq!(
                     props.state,
-                    vmservice::VmState::Paused as i32,
-                    "SaveVm should leave the VM paused"
+                    vmservice::VmState::Halted as i32,
+                    "SaveVm should leave the VM terminal"
+                );
+                assert_eq!(
+                    props.halt_reason.as_deref(),
+                    Some("snapshot saved"),
+                    "SaveVm should report why the VM is terminal"
                 );
                 client
                     .call()
@@ -1670,13 +1740,41 @@ async fn test_ttrpc_interface(
                     .await
                     .unwrap_err();
 
-                client
+                // The VM is terminal after the save, so changes fail at the
+                // lifecycle gate rather than waiting on device state.
+                let err = client
+                    .call()
+                    .start(
+                        vmservice::Vm::ModifyResource,
+                        consomme_port_change(
+                            vmservice::ModifyType::Update,
+                            vmservice::IpProtocol::Tcp as i32,
+                            "",
+                        ),
+                    )
+                    .await
+                    .unwrap_err();
+                assert_eq!(
+                    err.code,
+                    mesh_rpc::service::Code::FailedPrecondition as i32,
+                    "consomme port change after terminal SaveVm: {}",
+                    err.message
+                );
+
+                let err = client
                     .call()
                     .start(vmservice::Vm::TeardownVm, ())
                     .await
-                    .unwrap();
-
-                waiter.await.unwrap_err();
+                    .unwrap_err();
+                assert_eq!(err.code, mesh_rpc::service::Code::FailedPrecondition as i32);
+                let _ = client.call().start(vmservice::Vm::Quit, ()).await;
+                waiter.await.unwrap();
+                assert!(child.wait().await?.success());
+                stderr_task
+                    .await
+                    .context("failed to drain OpenVMM stderr after saved-source Quit")?;
+                (child, client, stderr_task) =
+                    launch_openvmm(&driver, &params, &openvmm, &socket_path, &pidfile_path).await?;
 
                 let err = client
                     .call()
@@ -1737,7 +1835,7 @@ async fn test_ttrpc_interface(
                     restore_result.snapshot_id, snapshot_id,
                     "RestoreVm should return the snapshot ID from the manifest"
                 );
-                let props = query_props().await.unwrap();
+                let props = query_props!().await.unwrap();
                 assert_eq!(
                     props.state,
                     vmservice::VmState::Paused as i32,
@@ -1763,7 +1861,7 @@ async fn test_ttrpc_interface(
                         .start(vmservice::Vm::ResumeVm, ())
                         .await
                         .unwrap();
-                    let props = query_props().await.unwrap();
+                    let props = query_props!().await.unwrap();
                     assert_eq!(
                         props.state,
                         vmservice::VmState::Running as i32,
@@ -1795,12 +1893,15 @@ async fn test_ttrpc_interface(
                         second_snapshot_id, snapshot_id,
                         "each SaveVm should generate a new snapshot ID"
                     );
-                    client
-                        .call()
-                        .start(vmservice::Vm::TeardownVm, ())
+                    let _ = client.call().start(vmservice::Vm::Quit, ()).await;
+                    assert!(child.wait().await?.success());
+                    stderr_task
                         .await
-                        .unwrap();
+                        .context("failed to drain OpenVMM stderr after second SaveVm Quit")?;
                     drop(shell);
+                    (child, client, stderr_task) =
+                        launch_openvmm(&driver, &params, &openvmm, &socket_path, &pidfile_path)
+                            .await?;
 
                     let restore_result = client
                         .call()
@@ -1816,7 +1917,7 @@ async fn test_ttrpc_interface(
                         .await
                         .unwrap();
                     assert_eq!(restore_result.snapshot_id, second_snapshot_id);
-                    let props = query_props().await.unwrap();
+                    let props = query_props!().await.unwrap();
                     assert_eq!(
                         props.state,
                         vmservice::VmState::Running as i32,
