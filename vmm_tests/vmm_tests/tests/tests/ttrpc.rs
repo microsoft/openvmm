@@ -118,6 +118,7 @@ exec /bin/busybox poweroff -f
             vmservice::ShutdownVmRequest {
                 mechanism: Mechanism::HypervIc as i32,
                 force: false,
+                operation: 0,
             },
         ),
         (
@@ -125,6 +126,7 @@ exec /bin/busybox poweroff -f
             vmservice::ShutdownVmRequest {
                 mechanism: Mechanism::HypervIc as i32,
                 force: true,
+                operation: 0,
             },
         ),
     ] {
@@ -415,6 +417,7 @@ async fn test_ttrpc_shutdown_windows_guest(
             vmservice::ShutdownVmRequest {
                 mechanism: vmservice::shutdown_vm_request::Mechanism::HypervIc as i32,
                 force: false,
+                operation: 0,
             },
         )
         .await
