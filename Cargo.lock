@@ -8668,6 +8668,7 @@ dependencies = [
  "inspect",
  "pal_async",
  "parking_lot",
+ "test_with_tracing",
 ]
 
 [[package]]

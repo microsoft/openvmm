@@ -1180,4 +1180,6 @@ mod tests {
             Poll::Ready(false)
         );
     }
+
+    mod lifecycle_tests;
 }
