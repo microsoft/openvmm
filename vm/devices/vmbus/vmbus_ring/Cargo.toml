@@ -16,6 +16,7 @@ thiserror.workspace = true
 zerocopy.workspace = true
 [dev-dependencies]
 criterion = { workspace = true, features = ["rayon", "cargo_bench_support"] }
+test_with_tracing.workspace = true
 
 [[bench]]
 name = "ring"
