@@ -124,9 +124,12 @@ fn cache_parameters_cpuid(
             eax.set_threads_sharing_cache_minus_one(0);
         }
 
-        // The level 3 cache is not per-VP; indicate that it is per-socket.
+        // The level 3 cache is per-socket; saturate its 12-bit sharing count.
         if CacheParametersEax::from(result[0]).cache_level() == 3 {
-            eax.set_threads_sharing_cache_minus_one(topology.reserved_vps_per_socket() - 1);
+            eax.set_threads_sharing_cache_minus_one(min(
+                0xfff,
+                topology.reserved_vps_per_socket() - 1,
+            ));
         }
 
         let eax_mask = CacheParametersEax::new()
@@ -397,6 +400,43 @@ mod tests {
                     expected,
                     "composed subleaf {subleaf}, smt {smt}"
                 );
+            }
+        }
+    }
+
+    // Test: Report Intel cache sharing for large socket reservations with only
+    //       one actual VP, with and without SMT.
+    // Expected: L3 sharing follows the rounded socket size up to 4096 threads,
+    //       then saturates without panicking; L1 and L2 remain per-core.
+    #[test]
+    fn intel_l3_cache_sharing_saturates_for_large_sockets() {
+        let host = host(Vendor::INTEL, 0x1f);
+        for smt in [false, true] {
+            for (vps_per_socket, l3_threads_minus_one) in [
+                (2048, 2047),
+                (2049, 4095),
+                (4096, 4095),
+                (4097, 4095),
+                (32768, 4095),
+            ] {
+                let topology = TopologyBuilder::new_x86()
+                    .vps_per_socket(vps_per_socket)
+                    .smt_enabled(smt)
+                    .build(1)
+                    .unwrap();
+                let guest = guest(&host, &topology);
+                for subleaf in 0..3 {
+                    let eax = CacheParametersEax::from(guest(4, subleaf)[0]);
+                    assert_eq!(
+                        eax.threads_sharing_cache_minus_one(),
+                        if subleaf == 2 {
+                            l3_threads_minus_one
+                        } else {
+                            u32::from(smt)
+                        },
+                        "subleaf {subleaf}, socket {vps_per_socket}, smt {smt}"
+                    );
+                }
             }
         }
     }
