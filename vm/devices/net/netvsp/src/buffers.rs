@@ -27,6 +27,38 @@ use zerocopy::KnownLayout;
 const PAGE_SIZE: usize = 4096;
 const PAGE_SIZE32: u32 = 4096;
 
+/// Error returned when a write to the receive buffer would exceed the locked
+/// page range.
+#[derive(Debug, Error)]
+#[error(
+    "rx buffer write overflow: offset={offset} len={len} \
+     total_size={total_size}"
+)]
+struct RxBufferWriteOverflow {
+    offset: usize,
+    len: usize,
+    total_size: usize,
+}
+
+/// Validates that `offset + len` does not overflow `usize` and
+/// `[offset, offset + len)` fits within `total_size`.
+fn check_rx_write_bounds(
+    offset: usize,
+    len: usize,
+    total_size: usize,
+) -> Result<(), RxBufferWriteOverflow> {
+    let rx_overflow_err = || RxBufferWriteOverflow {
+        offset,
+        len,
+        total_size,
+    };
+    let end = offset.checked_add(len).ok_or_else(rx_overflow_err)?;
+    if end > total_size {
+        return Err(rx_overflow_err());
+    }
+    Ok(())
+}
+
 #[derive(Debug, Error)]
 pub enum GuestBuffersError {
     #[error("invalid mtu {mtu}")]
@@ -121,16 +153,47 @@ impl GuestBuffers {
         })
     }
 
-    fn write_at(&self, offset: u32, mut buf: &[u8]) {
+    fn write_at(&self, offset: u32, buf: &[u8]) -> Result<(), RxBufferWriteOverflow> {
+        self.write_segments_at(offset, &[buf])
+    }
+
+    fn write_segments_at(
+        &self,
+        offset: u32,
+        segments: &[&[u8]],
+    ) -> Result<(), RxBufferWriteOverflow> {
         let mut offset = offset as usize;
-        while !buf.is_empty() {
-            let len = (PAGE_SIZE - offset % PAGE_SIZE).min(buf.len());
-            let (this, next) = buf.split_at(len);
-            self.locked_pages.pages()[offset / PAGE_SIZE][offset % PAGE_SIZE..][..len]
-                .atomic_write(this);
-            buf = next;
-            offset += len;
+        let total_size = self
+            .locked_pages
+            .pages()
+            .len()
+            .checked_mul(PAGE_SIZE)
+            .ok_or(RxBufferWriteOverflow {
+                offset,
+                len: usize::MAX,
+                total_size: usize::MAX,
+            })?;
+        let len = segments
+            .iter()
+            .try_fold(0usize, |len, segment| len.checked_add(segment.len()))
+            .ok_or(RxBufferWriteOverflow {
+                offset,
+                len: usize::MAX,
+                total_size,
+            })?;
+        check_rx_write_bounds(offset, len, total_size)?;
+        for &segment in segments {
+            let mut buf = segment;
+            while !buf.is_empty() {
+                let len = (PAGE_SIZE - offset % PAGE_SIZE).min(buf.len());
+                let (this, next) = buf.split_at(len);
+                self.locked_pages.pages()[offset / PAGE_SIZE][offset % PAGE_SIZE..][..len]
+                    .atomic_write(this);
+                buf = next;
+                offset += len;
+            }
         }
+        Ok(())
     }
 }
 
@@ -188,14 +251,55 @@ impl BufferAccess for BufferPool {
     }
 
     fn write_data(&mut self, id: RxId, data: &[u8]) {
-        self.buffers.write_at(self.offset(id) + RX_HEADER_LEN, data);
+        if data.len() > self.capacity(id) as usize {
+            tracelimit::warn_ratelimited!(
+                rx_id = id.0,
+                data_len = data.len(),
+                mtu = self.capacity(id),
+                "rx data exceeds capacity, dropping",
+            );
+            return;
+        }
+        if let Err(err) = self.buffers.write_at(self.offset(id) + RX_HEADER_LEN, data) {
+            tracelimit::warn_ratelimited!(
+                error = &err as &dyn std::error::Error,
+                rx_id = id.0,
+                data_len = data.len(),
+                "rx buffer write overflow in write_data",
+            );
+        }
+    }
+
+    fn write_packet(&mut self, id: RxId, metadata: &RxMetadata, data: &[u8]) {
+        self.write_packet_segments(id, metadata, &[data]);
     }
 
     fn write_packet_segments(&mut self, id: RxId, metadata: &RxMetadata, segments: &[&[u8]]) {
-        let mut offset = self.offset(id) + RX_HEADER_LEN;
-        for segment in segments {
-            self.buffers.write_at(offset, segment);
-            offset += segment.len() as u32;
+        if segments
+            .iter()
+            .try_fold(self.capacity(id) as usize, |remaining, segment| {
+                remaining.checked_sub(segment.len())
+            })
+            .is_none()
+        {
+            tracelimit::warn_ratelimited!(
+                rx_id = id.0,
+                segment_count = segments.len(),
+                mtu = self.capacity(id),
+                "rx packet segments exceed capacity, dropping",
+            );
+            return;
+        }
+        if let Err(err) = self
+            .buffers
+            .write_segments_at(self.offset(id) + RX_HEADER_LEN, segments)
+        {
+            tracelimit::warn_ratelimited!(
+                error = &err as &dyn std::error::Error,
+                rx_id = id.0,
+                "rx buffer write overflow in write_packet_segments",
+            );
+            return;
         }
         self.write_header(id, metadata);
     }
@@ -288,13 +392,17 @@ impl BufferAccess for BufferPool {
             },
         };
 
-        let mut offset = self.offset(id);
-        self.buffers.write_at(offset, header.as_bytes());
-        offset += size_of::<Header>() as u32;
-        self.buffers.write_at(offset, checksum_ppi.as_bytes());
-        offset += size_of::<PerPacketInfo>() as u32;
-        if let Some(vlan_ppi) = vlan {
-            self.buffers.write_at(offset, vlan_ppi.as_bytes());
+        let segments = [
+            header.as_bytes(),
+            checksum_ppi.as_bytes(),
+            vlan.as_ref().map_or(&[][..], |ppi| ppi.as_bytes()),
+        ];
+        if let Err(err) = self.buffers.write_segments_at(self.offset(id), &segments) {
+            tracelimit::warn_ratelimited!(
+                error = &err as &dyn std::error::Error,
+                rx_id = id.0,
+                "rx buffer write overflow in write_header",
+            );
         }
         static_assertions::const_assert!(
             (size_of::<Header>() + 2 * size_of::<PerPacketInfo>()) < RX_HEADER_LEN as usize
@@ -304,17 +412,150 @@ impl BufferAccess for BufferPool {
 
 #[cfg(test)]
 mod tests {
+    use crate::buffers::BufferPool;
     use crate::buffers::GuestBuffers;
     use crate::buffers::GuestBuffersError;
+    use crate::buffers::PAGE_SIZE;
+    use crate::buffers::RX_HEADER_LEN;
+    use crate::buffers::check_rx_write_bounds;
     use crate::buffers::compute_buffer_segments;
     use crate::buffers::sub_allocation_size_for_mtu;
     use guestmem::GuestMemory;
+    use net_backend::BufferAccess;
     use net_backend::RxBufferSegment;
+    use net_backend::RxId;
+    use net_backend::RxMetadata;
+    use net_backend::VlanMetadata;
+    use std::sync::Arc;
+    use test_with_tracing::test;
     use vmbus_channel::gpadl::GpadlMap;
     use vmbus_core::protocol::GpadlId;
     use vmbus_ring::gparange::GpaRange;
     use vmbus_ring::gparange::MultiPagedRangeBuf;
     use zerocopy::IntoBytes;
+
+    fn buffer_pool(mtu: u32) -> BufferPool {
+        let memory = GuestMemory::allocate(PAGE_SIZE);
+        memory.fill_at(0, 0xa5, PAGE_SIZE).unwrap();
+        let range = GpaRange {
+            len: PAGE_SIZE as u32,
+            offset: 0,
+        };
+        let range = MultiPagedRangeBuf::from_range_buffer(
+            1,
+            vec![u64::from_le_bytes(range.as_bytes().try_into().unwrap()), 0],
+        )
+        .unwrap();
+        let map = GpadlMap::new();
+        let id = GpadlId(4);
+        map.add(id, range);
+        let buffers = GuestBuffers::new(
+            memory,
+            map.view().map(id).unwrap(),
+            sub_allocation_size_for_mtu(mtu),
+            mtu,
+        )
+        .unwrap();
+        BufferPool::new(Arc::new(buffers))
+    }
+
+    fn read_buffer(pool: &BufferPool) -> Vec<u8> {
+        let mut bytes = vec![0; PAGE_SIZE];
+        pool.guest_memory().read_at(0, &mut bytes).unwrap();
+        bytes
+    }
+
+    #[test]
+    fn oversized_rx_data_leaves_memory_unchanged() {
+        let mut pool = buffer_pool(64);
+        pool.write_data(RxId(0), &[0x11; 65]);
+        assert_eq!(read_buffer(&pool), vec![0xa5; PAGE_SIZE]);
+    }
+
+    #[test]
+    fn exact_capacity_rx_data_preserves_adjacent_memory() {
+        let mut pool = buffer_pool(64);
+        pool.write_data(RxId(0), &[0x11; 64]);
+        let mut expected = vec![0xa5; PAGE_SIZE];
+        expected[RX_HEADER_LEN as usize..RX_HEADER_LEN as usize + 64].fill(0x11);
+        assert_eq!(read_buffer(&pool), expected);
+    }
+
+    #[test]
+    fn oversized_rx_packets_leave_header_and_data_unchanged() {
+        let metadata = RxMetadata {
+            len: 65,
+            vlan: Some(VlanMetadata::new().with_vlan_id(7)),
+            ..Default::default()
+        };
+        let mut pool = buffer_pool(64);
+        pool.write_packet(RxId(0), &metadata, &[0x11; 65]);
+        assert_eq!(read_buffer(&pool), vec![0xa5; PAGE_SIZE]);
+        pool.write_packet_segments(RxId(0), &metadata, &[&[0x11; 32], &[0x22; 33]]);
+        assert_eq!(read_buffer(&pool), vec![0xa5; PAGE_SIZE]);
+        assert_eq!(pool.take_rx_vlan_count(), 0);
+    }
+
+    #[test]
+    fn exact_capacity_rx_segments_match_contiguous_packet() {
+        let metadata = RxMetadata {
+            len: 64,
+            vlan: Some(VlanMetadata::new().with_vlan_id(7)),
+            ..Default::default()
+        };
+        let mut contiguous = buffer_pool(64);
+        let mut segmented = buffer_pool(64);
+        let mut data = [0x11; 64];
+        data[32..].fill(0x22);
+        contiguous.write_packet(RxId(0), &metadata, &data);
+        segmented.write_packet_segments(RxId(0), &metadata, &[&data[..32], &[], &data[32..]]);
+        let bytes = read_buffer(&segmented);
+        assert_eq!(bytes, read_buffer(&contiguous));
+        assert_eq!(
+            &bytes[RX_HEADER_LEN as usize..RX_HEADER_LEN as usize + 64],
+            &data
+        );
+        assert!(
+            bytes[RX_HEADER_LEN as usize + 64..]
+                .iter()
+                .all(|&b| b == 0xa5)
+        );
+        assert_eq!(segmented.take_rx_vlan_count(), 1);
+        assert_eq!(contiguous.take_rx_vlan_count(), 1);
+    }
+
+    #[test]
+    fn segmented_backing_buffer_overflow_is_rejected_before_writing() {
+        let pool = buffer_pool(64);
+        pool.buffers
+            .write_segments_at(PAGE_SIZE as u32 - 2, &[&[0x11; 2], &[0x22]])
+            .unwrap_err();
+        assert_eq!(read_buffer(&pool), vec![0xa5; PAGE_SIZE]);
+        pool.buffers
+            .write_at(PAGE_SIZE as u32 - 1, &[0x11])
+            .unwrap();
+        assert_eq!(read_buffer(&pool)[PAGE_SIZE - 1], 0x11);
+    }
+
+    #[test]
+    fn rx_packet_backing_buffer_overflow_leaves_header_and_data_unchanged() {
+        let mut pool = buffer_pool(PAGE_SIZE as u32);
+        let data = [0x11; PAGE_SIZE];
+        let metadata = RxMetadata {
+            len: data.len(),
+            vlan: Some(VlanMetadata::new().with_vlan_id(7)),
+            ..Default::default()
+        };
+        pool.write_data(RxId(0), &data);
+        assert_eq!(read_buffer(&pool), vec![0xa5; PAGE_SIZE]);
+        pool.write_packet_segments(
+            RxId(0),
+            &metadata,
+            &[&data[..PAGE_SIZE / 2], &data[PAGE_SIZE / 2..]],
+        );
+        assert_eq!(read_buffer(&pool), vec![0xa5; PAGE_SIZE]);
+        assert_eq!(pool.take_rx_vlan_count(), 0);
+    }
 
     /// Verify that inconsistent sub_allocation_size and MTU from saved state
     /// returns an error instead of panicking.
@@ -420,5 +661,23 @@ mod tests {
             compute_buffer_segments(&mut v, &gpns, range);
             check(&v, data);
         }
+    }
+
+    #[test]
+    fn test_check_rx_write_bounds() {
+        // Empty write at the end is fine.
+        check_rx_write_bounds(0x1000, 0, 0x1000).unwrap();
+        // Write that exactly fills the buffer is fine.
+        check_rx_write_bounds(0, 0x1000, 0x1000).unwrap();
+        // Write entirely inside the buffer is fine.
+        check_rx_write_bounds(0x100, 0x200, 0x1000).unwrap();
+        // Write that runs one byte past the end is rejected.
+        check_rx_write_bounds(0x1000, 1, 0x1000).unwrap_err();
+        check_rx_write_bounds(0xfff, 2, 0x1000).unwrap_err();
+        // Offset already past the end is rejected.
+        check_rx_write_bounds(0x2000, 0, 0x1000).unwrap_err();
+        // Length that overflows usize when added to offset is rejected.
+        check_rx_write_bounds(usize::MAX, 1, usize::MAX).unwrap_err();
+        check_rx_write_bounds(1, usize::MAX, usize::MAX).unwrap_err();
     }
 }
