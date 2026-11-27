@@ -877,11 +877,11 @@ async fn async_completion_single_packet(driver: DefaultDriver) {
 }
 
 /// Submit a descriptor index that is already in-flight (async completion
-/// pending). A duplicate descriptor index cannot be tracked (the pending slot
-/// is already taken), so the device treats it as a fatal protocol violation:
-/// the queue worker stops and no further completions are published.
+/// pending). The guest reuse violates the spec, but stalling the queue would
+/// hang drivers that wait for every submitted buffer, so the reused head is
+/// deferred until the original is published and then transmitted normally.
 #[async_test]
-async fn duplicate_descriptor_index_is_fatal(driver: DefaultDriver) {
+async fn duplicate_tx_descriptor_is_deferred(driver: DefaultDriver) {
     let mut harness = TestHarness::new(&driver);
     let mut handle = harness.enable_and_get_handle().await;
 
@@ -897,38 +897,47 @@ async fn duplicate_descriptor_index_is_fatal(driver: DefaultDriver) {
 
     // Wait for the backend to receive the first packet.
     handle.wait_for_tx_avail().await;
-    let log = handle.take_tx_avail_log();
-    assert_eq!(log.len(), 1);
+    assert_eq!(handle.take_tx_avail_log().len(), 1);
 
-    // Now post the same descriptor index again. The device should detect the
-    // duplicate and treat it as a fatal queue protocol violation, stopping the
-    // worker.
+    // Post the same descriptor index again while the first is outstanding.
     harness.post_tx_and_signal(desc_index, data_len);
     harness.settle().await;
-
-    // The duplicate must NOT be completed (old behavior dropped it with len 0).
-    assert_eq!(
-        harness.try_read_tx_used(),
-        None,
-        "duplicate descriptor must not produce a used ring entry"
-    );
-
-    // The backend should NOT have received a second tx_avail call.
-    let log = handle.take_tx_avail_log();
     assert!(
-        log.is_empty(),
-        "duplicate packet should not reach the backend"
+        handle.take_tx_avail_log().is_empty(),
+        "reused descriptor must wait for the original to be published"
     );
+    assert_eq!(harness.try_read_tx_used(), None);
 
-    // Because the worker stopped, even completing the original in-flight packet
-    // does not publish anything further.
+    // Completing the original publishes it, after which the reused descriptor
+    // is transmitted without another guest kick.
     handle.complete_tx(vec![TxId(desc_index as u32)]);
-    harness.settle().await;
-    assert_eq!(
-        harness.try_read_tx_used(),
-        None,
-        "no completions should be published after the fatal violation"
-    );
+    assert_eq!(harness.wait_for_used().await, (desc_index, 0));
+    handle.wait_for_tx_avail().await;
+    assert_eq!(handle.take_tx_avail_log().len(), 1);
+    handle.complete_tx(vec![TxId(desc_index as u32)]);
+    assert_eq!(harness.wait_for_used().await, (desc_index, 0));
+}
+
+#[async_test]
+async fn duplicate_tx_descriptor_in_sync_batch_is_deferred(driver: DefaultDriver) {
+    let mut harness = TestHarness::new(&driver);
+    // Prepost all entries so reuse is encountered while forming a batch,
+    // before even a synchronous backend can complete the first packet.
+    for id in [0, 0, 2] {
+        harness.post_tx_and_signal(id, 64);
+    }
+    let handle = harness.enable_and_get_handle().await;
+
+    for id in [0, 0, 2] {
+        assert_eq!(harness.wait_for_used().await, (id, 0));
+    }
+    assert_eq!(harness.try_read_tx_used(), None);
+    let batches: Vec<Vec<_>> = handle
+        .take_tx_avail_log()
+        .iter()
+        .map(|segments| segments.iter().filter_map(|s| s.tx_id).collect())
+        .collect();
+    assert_eq!(batches, [vec![0], vec![0, 2]]);
 }
 
 /// An unordered network backend is rejected at device creation with a clear
@@ -1094,10 +1103,10 @@ async fn rx_malformed_completed_in_order(driver: DefaultDriver) {
 }
 
 /// A malformed descriptor completed behind earlier work remains owned until
-/// its used entry is published, so reusing its head stops the queue without
-/// reaching a duplicate-completion assertion.
+/// its used entry is published, so reusing its head is deferred (without
+/// reaching a duplicate-completion assertion) and processed after publication.
 #[async_test]
-async fn duplicate_malformed_rx_descriptor_is_fatal(driver: DefaultDriver) {
+async fn duplicate_malformed_rx_descriptor_is_deferred(driver: DefaultDriver) {
     let mut harness = TestHarness::new(&driver);
     let mut handle = harness.enable_and_get_handle().await;
 
@@ -1113,22 +1122,23 @@ async fn duplicate_malformed_rx_descriptor_is_fatal(driver: DefaultDriver) {
     assert_eq!(
         harness.try_read_rx_used(),
         None,
-        "duplicate malformed descriptor must not produce a used entry"
+        "reused malformed descriptor must not be published ahead of descriptor 0"
     );
 
     handle.inject_rx_packet_for(RxId(0), b"packet-zero");
-    harness.settle().await;
     assert_eq!(
-        harness.try_read_rx_used(),
-        None,
-        "queue worker must stop after the duplicate descriptor"
+        harness.wait_for_rx_used().await,
+        (0, NET_HEADER_SIZE + b"packet-zero".len() as u32)
     );
+    assert_eq!(harness.wait_for_rx_used().await, (1, 0));
+    assert_eq!(harness.wait_for_rx_used().await, (1, 0));
 }
 
 /// Backend completion does not release a descriptor head while its used entry
-/// is still waiting behind earlier work.
+/// is still waiting behind earlier work, so reusing it is deferred until the
+/// original is published and then posted to the backend normally.
 #[async_test]
-async fn duplicate_backend_completed_rx_descriptor_is_fatal(driver: DefaultDriver) {
+async fn duplicate_backend_completed_rx_descriptor_is_deferred(driver: DefaultDriver) {
     let mut harness = TestHarness::new(&driver);
     let mut handle = harness.enable_and_get_handle().await;
 
@@ -1146,15 +1156,25 @@ async fn duplicate_backend_completed_rx_descriptor_is_fatal(driver: DefaultDrive
     assert_eq!(
         harness.try_read_rx_used(),
         None,
-        "backend-completed duplicate must not produce a used entry"
+        "reused descriptor must not be published ahead of descriptor 0"
     );
 
     handle.inject_rx_packet_for(RxId(0), b"packet-zero");
-    harness.settle().await;
     assert_eq!(
-        harness.try_read_rx_used(),
-        None,
-        "queue worker must stop after the duplicate descriptor"
+        harness.wait_for_rx_used().await,
+        (0, NET_HEADER_SIZE + b"packet-zero".len() as u32)
+    );
+    assert_eq!(
+        harness.wait_for_rx_used().await,
+        (1, NET_HEADER_SIZE + b"packet-one".len() as u32)
+    );
+
+    // The reused buffer reaches the backend and receives normally.
+    handle.wait_for_rx_pending().await;
+    handle.inject_rx_packet_for(RxId(1), b"packet-two");
+    assert_eq!(
+        harness.wait_for_rx_used().await,
+        (1, NET_HEADER_SIZE + b"packet-two".len() as u32)
     );
 }
 

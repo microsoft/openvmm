@@ -14,27 +14,36 @@
 //! This is deliberately a *side* helper whose methods borrow a
 //! [`VirtioQueue`], rather than being baked into the queue itself. Devices that
 //! do not need in-order completion (virtio-blk, virtio-vsock, ...) never
-//! instantiate it and pay nothing — the queue's hot path is untouched. It uses
-//! only the queue's public API, mirroring QEMU's
-//! `virtqueue_ordered_fill`/`virtqueue_ordered_flush` (`used_elems`): consumed
+//! instantiate it and pay nothing — the queue's hot path is untouched. Consumed
 //! descriptors are recorded in consumption order, completions fill their slot
 //! (possibly out of order), and only the contiguous filled prefix is published
 //! to the used ring, in order.
+//!
+//! A driver that makes a split-ring descriptor head available again before
+//! its previous use has been published violates the virtio spec. The reused
+//! head is left in the available ring until the earlier use is published and
+//! then processed normally. Packed-ring overlap is rejected, since publishing
+//! the earlier completion overwrites the reused descriptor metadata. Use
+//! [`InOrderCompletion::poll_kick`] to wait without spinning on a deferred head.
 
 use crate::VirtioQueue;
 use crate::VirtioQueueCallbackWork;
+use crate::common::PeekResult;
 use crate::queue::QueueCompletion;
 use inspect::Inspect;
 use std::collections::VecDeque;
 use std::io::Error;
-use std::io::ErrorKind;
+use std::task::Context;
+use std::task::Poll;
+use std::task::ready;
 
 /// Enforces in-order used-ring publication for a single [`VirtioQueue`].
 ///
 /// Consume descriptors via [`try_next`](Self::try_next) and complete them via
 /// [`complete`](Self::complete) instead of calling the queue's methods
-/// directly. Completions may be issued in any order; the used ring is always
-/// published in consumption (available) order.
+/// directly. Wait for work via [`poll_kick`](Self::poll_kick). Completions may be
+/// issued in any order; the used ring is always published in consumption
+/// (available) order.
 #[derive(Inspect)]
 pub struct InOrderCompletion {
     /// Descriptor indices of outstanding descriptors, in consumption order.
@@ -48,9 +57,13 @@ pub struct InOrderCompletion {
     /// Completed-but-not-yet-published work, indexed by descriptor index.
     /// Bounded by the queue size, so a descriptor index (always
     /// `< queue_size`) is a unique key for the outstanding set: a repeated
-    /// index while still outstanding is rejected by `try_next`.
+    /// index while still outstanding is deferred by `try_next`.
     #[inspect(skip)]
     completed: Vec<Option<Completed>>,
+    /// Outstanding count when fetching required a completion to retire.
+    /// Between fetches, `order` can only shrink, even if publication fails.
+    /// Cleared by the next fetch, never maintained by completion paths.
+    blocked_at_outstanding: Option<usize>,
 }
 
 struct Completed {
@@ -65,40 +78,72 @@ impl InOrderCompletion {
             order: VecDeque::with_capacity(queue_size as usize),
             in_flight: vec![false; queue_size as usize],
             completed: (0..queue_size).map(|_| None).collect(),
+            blocked_at_outstanding: None,
         }
     }
 
     /// Consumes the next available descriptor from `queue`, recording it for
     /// in-order completion. Returns `Ok(None)` if no work is available.
-    /// Reusing an outstanding descriptor returns `InvalidData` without consuming it.
+    ///
+    /// If the next available descriptor head is still outstanding, it is left
+    /// unconsumed and `Ok(None)` is returned until the earlier use is
+    /// published. A split ring with no remaining head capacity is likewise
+    /// deferred. Packed chains exceeding the remaining capacity fail the queue.
     ///
     /// Use this in place of [`VirtioQueue::try_next`].
     pub fn try_next(
         &mut self,
         queue: &mut VirtioQueue,
     ) -> Result<Option<VirtioQueueCallbackWork>, Error> {
-        let Some(work) = queue.try_peek()? else {
-            return Ok(None);
+        self.blocked_at_outstanding = None;
+        let work = match queue.try_peek_with_backpressure()? {
+            PeekResult::Empty => return Ok(None),
+            PeekResult::CapacityBlocked => {
+                self.blocked_at_outstanding = Some(self.order.len());
+                return Ok(None);
+            }
+            PeekResult::Work(work) => work,
         };
-        let idx = work.descriptor_index() as usize;
+        let idx = work.descriptor_index();
         // The queue validates the descriptor index against the ring size
         // when it reads the descriptor, so an out-of-range index fails
         // above rather than reaching here. Assert the invariant so a
         // violation fails fast at entry instead of corrupting later state.
         assert!(
-            idx < self.completed.len(),
+            (idx as usize) < self.completed.len(),
             "descriptor index {idx} exceeds queue size {}",
             self.completed.len()
         );
-        if self.in_flight[idx] {
-            return Err(Error::new(
-                ErrorKind::InvalidData,
-                format!("descriptor {idx} is already outstanding"),
-            ));
+        if self.in_flight[idx as usize] {
+            drop(work);
+            self.blocked_at_outstanding = Some(self.order.len());
+            tracelimit::event_ratelimited_static!(
+                level: DEBUG,
+                descriptor_index = idx,
+                "guest reused an outstanding descriptor, deferring it"
+            );
+            return Ok(None);
         }
-        self.in_flight[idx] = true;
-        self.order.push_back(work.descriptor_index());
+        self.in_flight[idx as usize] = true;
+        self.order.push_back(idx);
         Ok(Some(work.consume()))
+    }
+
+    /// Waits for guest work that can be consumed by [`try_next`](Self::try_next).
+    ///
+    /// Unlike [`VirtioQueue::poll_kick`], this returns `Pending` if fetching
+    /// encountered reuse or insufficient capacity and no outstanding entry has
+    /// retired since. Retirement permits a retry even if publication failed.
+    /// Callers must also poll their completion source with the same waker and
+    /// retry fetching after processing completions: this method does not
+    /// register a waker for retirement.
+    pub fn poll_kick(&self, queue: &mut VirtioQueue, cx: &mut Context<'_>) -> Poll<()> {
+        ready!(queue.poll_kick(cx));
+        if self.blocked_at_outstanding == Some(self.order.len()) {
+            Poll::Pending
+        } else {
+            Poll::Ready(())
+        }
     }
 
     /// Records a completion for the descriptor identified by `completion` and
