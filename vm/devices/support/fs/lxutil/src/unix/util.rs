@@ -28,9 +28,12 @@ unsafe impl Sync for DirectoryEnumerator {}
 impl DirectoryEnumerator {
     // Create a new enumerator by taking ownership of a file descriptor.
     pub fn new(fd: impl Into<OwnedFd>) -> lx::Result<Self> {
-        // SAFETY: By requiring an OwnedFd we take ownership of the fd and give it away to fdopendir, as per its
-        // documented requirements.
-        let dir = check_lx_ptr(unsafe { libc::fdopendir(fd.into().into_raw_fd()) })?;
+        let fd = fd.into();
+        // SAFETY: fd is a valid, owned descriptor. fdopendir takes ownership only on success; on failure the
+        // OwnedFd is dropped here and closes it, so a non-directory fd (ENOTDIR) does not leak.
+        let dir = check_lx_ptr(unsafe { libc::fdopendir(fd.as_raw_fd()) })?;
+        // fdopendir succeeded and now owns the descriptor; closedir in Drop will close it.
+        let _ = fd.into_raw_fd();
         Ok(Self { dir })
     }
 
@@ -446,6 +449,30 @@ mod tests {
         assert_eq!(
             std::fs::metadata(&file).unwrap().permissions().mode() & 0o777,
             0o640
+        );
+    }
+
+    fn open_fds() -> usize {
+        std::fs::read_dir("/proc/self/fd").unwrap().count()
+    }
+
+    #[test]
+    fn directory_enumerator_on_non_directory_does_not_leak_fd() {
+        let root = tempfile::tempdir().unwrap();
+        let file = root.path().join("file");
+        std::fs::write(&file, b"data").unwrap();
+        let before = open_fds();
+        for _ in 0..200 {
+            let fd = std::fs::File::open(&file).unwrap();
+            assert_eq!(
+                DirectoryEnumerator::new(fd).err().unwrap(),
+                lx::Error::ENOTDIR
+            );
+        }
+        let after = open_fds();
+        assert!(
+            after < before + 100,
+            "200 failed enumerations: {before} -> {after} descriptors open"
         );
     }
 }
