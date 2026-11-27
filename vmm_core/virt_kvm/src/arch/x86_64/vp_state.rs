@@ -701,17 +701,94 @@ impl AccessVpState for KvmVpStateAccess<'_, '_> {
     }
 
     fn nested_state(&mut self) -> Result<vp::NestedState, Self::Error> {
-        Err(KvmError::NotSupported)
+        // KVM reports a queued PIC interrupt in neither the VP state nor the
+        // nested state, so saving now would lose it.
+        if self.vp.runner.extint_may_be_queued() {
+            return Err(KvmError::ExtintQueued);
+        }
+        get_nested_state(
+            &self.kvm(),
+            self.vp.partition.caps.vendor.is_intel_compatible(),
+        )
     }
 
     fn set_nested_state(&mut self, value: &vp::NestedState) -> Result<(), Self::Error> {
-        if !value.data.is_empty() {
-            return Err(KvmError::NestedStateRestoreUnsupported);
+        set_nested_state(
+            &self.kvm(),
+            self.vp.partition.caps.vendor.is_intel_compatible(),
+            value,
+        )
+    }
+}
+
+/// Reads a vcpu's nested state, with `MSR_VM_HSAVE_PA` on SVM, which KVM keeps
+/// outside the blob.
+fn get_nested_state(kvm: &kvm::Processor<'_>, vmx: bool) -> Result<vp::NestedState, KvmError> {
+    // Empty only on a host without KVM_CAP_NESTED_STATE.
+    let data = kvm.get_nested_state()?;
+    let mut svm_hsave_pa = [0];
+    if !vmx {
+        kvm.get_msrs(&[x86defs::X86X_AMD_MSR_VM_HSAVE_PA], &mut svm_hsave_pa)?;
+    }
+    Ok(vp::NestedState {
+        data,
+        svm_hsave_pa: svm_hsave_pa[0],
+    })
+}
+
+/// Writes a vcpu's nested state, with `MSR_VM_HSAVE_PA` on SVM.
+fn set_nested_state(
+    kvm: &kvm::Processor<'_>,
+    vmx: bool,
+    value: &vp::NestedState,
+) -> Result<(), KvmError> {
+    if !vmx {
+        kvm.set_msrs(&[(x86defs::X86X_AMD_MSR_VM_HSAVE_PA, value.svm_hsave_pa)])?;
+    }
+    // Empty is NestedState::at_reset's sentinel. There is no saved payload
+    // to restore; synthesize the vendor's architectural reset state.
+    if value.data.is_empty() {
+        kvm.reset_nested_state(vmx)?;
+    } else {
+        kvm.set_nested_state(&value.data)?;
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::get_nested_state;
+    use super::set_nested_state;
+    use kvm::Kvm;
+    use kvm::VmType;
+    use test_with_tracing::test;
+
+    #[test]
+    #[ignore = "requires access to /dev/kvm"]
+    fn nested_state_round_trips_svm_hsave_pa() {
+        kvm::init();
+        let leaf0 = safe_intrinsics::cpuid(0, 0);
+        let vmx = x86defs::cpuid::Vendor::from_ebx_ecx_edx(leaf0.ebx, leaf0.ecx, leaf0.edx)
+            .is_intel_compatible();
+
+        let kvm = Kvm::new().unwrap();
+        let mut source = kvm.new_vm(VmType::Default).unwrap();
+        source.add_vp(0).unwrap();
+        let mut target = kvm.new_vm(VmType::Default).unwrap();
+        target.add_vp(0).unwrap();
+
+        if !vmx {
+            source
+                .vp(0)
+                .set_msrs(&[(x86defs::X86X_AMD_MSR_VM_HSAVE_PA, 0x1234_5000)])
+                .unwrap();
         }
-        // Empty is NestedState::at_reset's sentinel. There is no saved payload
-        // to restore; synthesize the vendor's architectural reset state.
-        self.kvm()
-            .reset_nested_state(self.vp.partition.caps.vendor.is_intel_compatible())?;
-        Ok(())
+        let saved = get_nested_state(&source.vp(0), vmx).unwrap();
+        set_nested_state(&target.vp(0), vmx, &saved).unwrap();
+        let restored = get_nested_state(&target.vp(0), vmx).unwrap();
+
+        let expected = if vmx { 0 } else { 0x1234_5000 };
+        assert_eq!(saved.svm_hsave_pa, expected);
+        assert_eq!(restored.svm_hsave_pa, expected);
     }
 }

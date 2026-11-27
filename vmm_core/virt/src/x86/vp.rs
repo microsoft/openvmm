@@ -1965,6 +1965,10 @@ impl StateElement<X86PartitionCapabilities, X86VpInfo> for SynicEventFlagsPage {
 pub struct NestedState {
     #[mesh(1)]
     pub data: Vec<u8>,
+    /// The SVM host save area address (`MSR_VM_HSAVE_PA`), for backends whose
+    /// blob does not include it. Zero otherwise.
+    #[mesh(2)]
+    pub svm_hsave_pa: u64,
 }
 
 impl StateElement<X86PartitionCapabilities, X86VpInfo> for NestedState {

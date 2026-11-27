@@ -108,6 +108,8 @@ mod ioctl {
     #[cfg(target_arch = "x86_64")]
     ioctl_write_ptr!(kvm_set_xcrs, KVMIO, 0xa7, kvm_xcrs);
     #[cfg(target_arch = "x86_64")]
+    ioctl_readwrite!(kvm_get_nested_state, KVMIO, 0xbe, kvm_nested_state);
+    #[cfg(target_arch = "x86_64")]
     ioctl_write_ptr!(kvm_set_nested_state, KVMIO, 0xbf, kvm_nested_state);
     ioctl_write_ptr!(kvm_get_reg, KVMIO, 0xab, kvm_one_reg);
     ioctl_write_ptr!(kvm_set_reg, KVMIO, 0xac, kvm_one_reg);
@@ -381,6 +383,12 @@ pub enum Error {
     GetClock(#[source] nix::Error),
     #[error("SetClock")]
     SetClock(#[source] nix::Error),
+    #[error("GetNestedState")]
+    GetNestedState(#[source] nix::Error),
+    #[error("nested state buffer too small: {0} bytes")]
+    NestedStateTooSmall(usize),
+    #[error("nested state size {size} out of range for a {len}-byte buffer")]
+    NestedStateBadSize { size: usize, len: usize },
 }
 
 type Result<T, E = Error> = std::result::Result<T, E>;
@@ -1683,6 +1691,108 @@ impl<'a> Processor<'a> {
         Ok(data.xcrs[0].value)
     }
 
+    /// Reads the vCPU's nested-virtualization state (VMCS12/VMCB plus the
+    /// per-vCPU nested control fields) as an opaque, size-prefixed blob.
+    ///
+    /// Returns an empty vector when the host kernel does not support
+    /// `KVM_CAP_NESTED_STATE`, so callers can treat "no nested state" as a blob
+    /// of length zero.
+    #[cfg(target_arch = "x86_64")]
+    pub fn get_nested_state(&self) -> Result<Vec<u8>> {
+        // The largest nested-state size, or <= 0 without the capability. Asked
+        // on the VM fd, since a vCPU fd rejects KVM_CHECK_EXTENSION.
+        // SAFETY: Calling IOCTL as documented, with no special requirements.
+        let max = unsafe {
+            ioctl::kvm_check_extension(self.0.vm.as_raw_fd(), KVM_CAP_NESTED_STATE as i32)
+                .map_err(Error::CheckExtension)?
+        };
+        if max <= 0 {
+            return Ok(Vec::new());
+        }
+        let max = max as usize;
+        if max < size_of::<kvm_nested_state>() {
+            return Err(Error::NestedStateTooSmall(max));
+        }
+
+        let mut buf = vec![0u8; max];
+        let state = buf.as_mut_ptr().cast::<kvm_nested_state>();
+        // `buf` is only byte-aligned, so `.size` is accessed unaligned.
+        // SAFETY: `buf` is `max` bytes (>= one `kvm_nested_state` header) and is
+        // valid for reads and writes for `max` bytes.
+        let used = unsafe {
+            std::ptr::addr_of_mut!((*state).size).write_unaligned(max as u32);
+            ioctl::kvm_get_nested_state(self.get().vcpu.as_raw_fd(), state)
+                .map_err(Error::GetNestedState)?;
+            std::ptr::addr_of!((*state).size).read_unaligned() as usize
+        };
+        // The returned length must cover the header and fit in `buf`.
+        if !(size_of::<kvm_nested_state>()..=max).contains(&used) {
+            return Err(Error::NestedStateBadSize {
+                size: used,
+                len: max,
+            });
+        }
+        buf.truncate(used);
+        Ok(buf)
+    }
+
+    /// Returns whether the vCPU is running a nested guest.
+    #[cfg(target_arch = "x86_64")]
+    pub fn is_in_nested_guest(&self) -> Result<bool> {
+        let current = self.get_nested_state()?;
+        if current.is_empty() {
+            return Ok(false);
+        }
+        // SAFETY: `current` is at least a header (get_nested_state guarantees
+        // it), and `flags` is a plain u16 read at a fixed offset.
+        let flags = unsafe {
+            std::ptr::addr_of!((*current.as_ptr().cast::<kvm_nested_state>()).flags)
+                .read_unaligned()
+        };
+        Ok(u32::from(flags) & KVM_STATE_NESTED_GUEST_MODE != 0)
+    }
+
+    /// Restores nested-virtualization state previously captured by
+    /// [`Processor::get_nested_state`].
+    ///
+    /// The vCPU's CPUID, MSRs, and control registers (CR4.VMXE,
+    /// IA32_FEATURE_CONTROL) must already be restored, since the kernel
+    /// validates the blob against them.
+    ///
+    /// An empty blob restores nothing; use [`Processor::reset_nested_state`]
+    /// to clear existing state.
+    #[cfg(target_arch = "x86_64")]
+    pub fn set_nested_state(&self, data: &[u8]) -> Result<()> {
+        if data.is_empty() {
+            return Ok(());
+        }
+        if data.len() < size_of::<kvm_nested_state>() {
+            return Err(Error::NestedStateTooSmall(data.len()));
+        }
+        // The kernel reads `size` bytes, so a malformed snapshot must not be
+        // able to point it past the slice.
+        let state = data.as_ptr().cast::<kvm_nested_state>();
+        // SAFETY: `data` holds at least a header (checked above); it is only
+        // byte-aligned, so `.size` is read unaligned.
+        let size = unsafe { std::ptr::addr_of!((*state).size).read_unaligned() } as usize;
+        if !(size_of::<kvm_nested_state>()..=data.len()).contains(&size) {
+            return Err(Error::NestedStateBadSize {
+                size,
+                len: data.len(),
+            });
+        }
+        // SAFETY: the kernel reads `size` bytes starting at `data`, and
+        // `size <= data.len()`.
+        unsafe {
+            ioctl::kvm_set_nested_state(
+                self.get().vcpu.as_raw_fd(),
+                data.as_ptr().cast::<kvm_nested_state>(),
+            )
+            .map_err(Error::SetNestedState)?;
+        }
+        Ok(())
+    }
+
     pub fn set_mp_state(&self, state: u32) -> Result<()> {
         let state = kvm_mp_state { mp_state: state };
         // TODO: We are not checking KVM_CAP_MP_STATE first.
@@ -1802,6 +1912,7 @@ impl<'a> Processor<'a> {
         VpRunner {
             partition: self.0,
             idx: self.1,
+            extint_queued: false,
             _not_send_sync: PhantomData,
         }
     }
@@ -1810,6 +1921,8 @@ impl<'a> Processor<'a> {
 pub struct VpRunner<'a> {
     partition: &'a Partition,
     idx: u32,
+    /// Whether KVM may still hold an extint queued with `KVM_INTERRUPT`.
+    extint_queued: bool,
     // This type stores the current thread in `partition` and removes it in
     // `drop`, so don't allow sending or sharing this.
     _not_send_sync: PhantomData<*const u8>,
@@ -1879,6 +1992,11 @@ impl<'a> VpRunner<'a> {
             // SAFETY: Calling IOCTL as documented, with no special requirements.
             let result = unsafe { ioctl::kvm_run(vp.vcpu.as_raw_fd(), 0) };
             CURRENT_KVM_RUN.with(|r| r.store(NO_KVM_RUN, Ordering::Relaxed));
+            // KVM reports the VP ready for an interrupt only once no extint is
+            // queued, and updates the field even when it returns early.
+            if self.run_data().ready_for_interrupt_injection != 0 {
+                self.extint_queued = false;
+            }
             match result {
                 Ok(_) => Ok(true),
                 Err(err) => match err {
@@ -2117,10 +2235,18 @@ impl<'a> VpRunner<'a> {
     /// [`Self::check_or_request_interrupt_window`] has returned `true`.
     pub fn queue_extint_interrupt(&mut self, vector: u8) -> Result<()> {
         self.partition.vp(self.idx).interrupt(vector.into())?;
+        self.extint_queued = true;
         // Remember that there is a pending extint interrupt. KVM will update
         // this field again after the VP runs.
         self.run_data().ready_for_interrupt_injection = 0;
         Ok(())
+    }
+
+    /// Returns whether KVM may still hold an extint queued with
+    /// [`Self::queue_extint_interrupt`], which is then missing from any saved
+    /// VP state.
+    pub fn extint_may_be_queued(&self) -> bool {
+        self.extint_queued
     }
 }
 
@@ -2284,6 +2410,48 @@ mod tests {
         assert_eq!(SevSnpPageType::Unmeasured.as_uapi(), 4);
         assert_eq!(SevSnpPageType::Secrets.as_uapi(), 5);
         assert_eq!(SevSnpPageType::Cpuid.as_uapi(), 6);
+    }
+
+    /// A wrong `vmxon_pa` would leave the vCPU in VMX operation with no error.
+    #[test]
+    fn nested_state_at_reset_says_not_in_vmx_operation() {
+        let state = nested_state_at_reset(true);
+
+        // SAFETY: the builder writes the union's vmx arm.
+        let vmx = unsafe { state.hdr.vmx };
+        assert_eq!(
+            vmx.vmxon_pa,
+            u64::MAX,
+            "vmxon_pa must say 'no VMXON region'"
+        );
+        assert_eq!(
+            vmx.vmcs12_pa,
+            u64::MAX,
+            "vmcs12_pa must say 'no current VMCS'"
+        );
+        assert_eq!(
+            state.flags, 0,
+            "KVM rejects every VMX flag but NESTED_EVMCS once vmxon_pa is invalid"
+        );
+        assert_eq!(state.format, KVM_STATE_NESTED_FORMAT_VMX as u16);
+        assert_eq!(
+            state.size as usize,
+            size_of::<kvm_nested_state>(),
+            "size must cover exactly the header the kernel will read"
+        );
+    }
+
+    /// Without the flag, KVM would clear GIF and block interrupts after reset.
+    #[test]
+    fn nested_state_at_reset_keeps_gif_set_on_svm() {
+        let state = nested_state_at_reset(false);
+        assert_eq!(state.format, KVM_STATE_NESTED_FORMAT_SVM as u16);
+        assert_eq!(
+            u32::from(state.flags),
+            KVM_STATE_NESTED_GIF_SET,
+            "a reset vCPU has GIF set and is not in guest mode"
+        );
+        assert_eq!(state.size as usize, size_of::<kvm_nested_state>());
     }
 
     #[test]
