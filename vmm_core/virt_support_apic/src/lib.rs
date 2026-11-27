@@ -815,6 +815,10 @@ impl<T: ApicClient> LocalApicAccess<'_, T> {
             }
             X2APIC_MSR_BASE..=X2APIC_MSR_END if self.apic.x2apic_enabled() => {
                 let register = ApicRegister((msr - X2APIC_MSR_BASE) as u8);
+                // Hardware raises #GP(0) if any reserved TPR bit (63:8) is set.
+                if register == ApicRegister::TPR && value > 0xff {
+                    return Err(MsrError::InvalidAccess);
+                }
                 if register == ApicRegister::ICR0 {
                     // ICR is a 64-bit register in X2APIC.
                     self.apic.icr = value & u64::from(ICR_X2APIC_MASK);
@@ -911,7 +915,7 @@ impl<T: ApicClient> LocalApicAccess<'_, T> {
     fn write_register(&mut self, register: ApicRegister, value: u32) -> bool {
         match register {
             ApicRegister::TPR => {
-                self.client.set_cr8(value >> 4);
+                self.client.set_cr8((value >> 4) & 0xf);
             }
             ApicRegister::EOI => {
                 if self.apic.x2apic_enabled() && value != 0 {
@@ -3233,17 +3237,11 @@ mod tests {
         assert_eq!(pending(&mut apic, &mut client), Some(TEST_VECTOR));
     }
 
-    // IGNORED: MMIO passes reserved TPR bits to CR8, and the x2APIC TPR MSR
-    // does not reject writes with reserved bits set. The Hyper-V TPR MSR
-    // already rejects values above 0xff. Re-enable this test together with
-    // the fixes by removing #[ignore].
-    //
     // Test: A guest writes TPR with bits above bit 7 set, through xAPIC MMIO
-    //       and through the x2APIC TPR MSR.
+    //       and through the x2APIC TPR MSR, then writes valid x2APIC values.
     // Expected: MMIO ignores reserved bits; the x2APIC MSR write faults
-    //       without changing CR8.
+    //       without changing CR8; valid writes update only the priority.
     #[test]
-    #[ignore = "known bugs: MMIO passes reserved TPR bits to CR8; x2APIC accepts them"]
     fn tpr_writes_handle_reserved_bits_by_mode() {
         let set = LocalApicSet::builder().x2apic_capable(true).build();
         let mut client = TestClient::default();
@@ -3253,12 +3251,31 @@ mod tests {
         assert_eq!(read_reg(&mut apic, &mut client, ApicRegister::TPR), 0x30);
 
         enter_x2apic(&mut apic, &mut client);
-        assert!(matches!(
+        for value in [0x100, 0xffff_ff46, 0x1_0000_0046, 0x8000_0000_0000_0046] {
+            assert!(
+                matches!(
+                    apic.access(&mut client)
+                        .msr_write(ApicRegister::TPR.x2apic_msr(), value),
+                    Err(MsrError::InvalidAccess)
+                ),
+                "value: {value:#x}"
+            );
+            assert_eq!(client.cr8, 3, "value: {value:#x}");
+        }
+
+        for (value, priority) in [(0, 0), (0xf, 0), (0x10, 1), (0x46, 4), (0xff, 0xf)] {
             apic.access(&mut client)
-                .msr_write(ApicRegister::TPR.x2apic_msr(), 0xffff_ff46),
-            Err(MsrError::InvalidAccess)
-        ));
-        assert_eq!(client.cr8, 3);
+                .msr_write(ApicRegister::TPR.x2apic_msr(), value)
+                .unwrap();
+            assert_eq!(client.cr8, priority, "value: {value:#x}");
+            assert_eq!(
+                apic.access(&mut client)
+                    .msr_read(ApicRegister::TPR.x2apic_msr())
+                    .unwrap(),
+                u64::from(priority << 4),
+                "value: {value:#x}"
+            );
+        }
     }
 
     fn vectors(list: &[u8]) -> [u32; 8] {
