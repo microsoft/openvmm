@@ -26,16 +26,24 @@ pub struct Namespace {
     mem: GuestMemory,
     block_shift: u32,
     pr: bool,
+    /// Stable backing-store identity, when the disk supplies one.
+    ///
+    /// A missing or all-zero disk ID is not replaced with a controller/NSID
+    /// derived value: those identify an attachment slot, not the backing
+    /// namespace, and can be reused for a different disk.
+    nguid: Option<[u8; 16]>,
 }
 
 impl Namespace {
     pub fn new(mem: GuestMemory, nsid: u32, disk: Disk) -> Self {
+        let nguid = disk.disk_id().filter(|id| *id != [0; 16]);
         Self {
             block_shift: disk.sector_size().trailing_zeros(),
             pr: disk.pr().is_some(),
             mem,
             disk,
             nsid,
+            nguid,
         }
     }
 
@@ -63,6 +71,9 @@ impl Namespace {
             nlbaf: 0,
             flbas: nvm::Flbas::new().with_low_index(0),
             rescap,
+            // Populate the inline field only when the backing store supplies
+            // a suitable identity. EUI64 remains zero.
+            nguid: self.nguid.unwrap_or_default(),
             nsattr: nvm::Nsattr::new().with_write_protected(self.disk.is_read_only()),
             ..FromZeros::new_zeroed()
         };
@@ -70,18 +81,18 @@ impl Namespace {
     }
 
     pub fn namespace_id_descriptor(&self, buf: &mut [u8]) {
+        buf.fill(0);
+        let Some(nguid) = self.nguid else {
+            return;
+        };
         let id = nvm::NamespaceIdentificationDescriptor::mut_from_prefix(buf)
             .unwrap()
             .0; // TODO: zerocopy: from-prefix (mut_from_prefix): use-rest-of-range (https://github.com/microsoft/openvmm/issues/759)
-        let mut nid = [0u8; 0x10];
-        if let Some(guid) = self.disk.disk_id() {
-            nid = guid;
-        }
         *id = nvm::NamespaceIdentificationDescriptor {
             nidt: nvm::NamespaceIdentifierType::NSGUID.0,
-            nidl: size_of_val(&nid) as u8,
+            nidl: size_of_val(&nguid) as u8,
             rsvd: [0, 0],
-            nid,
+            nid: nguid,
         };
     }
 
@@ -277,12 +288,174 @@ fn map_disk_error(err: disk_backend::DiskError) -> NvmeError {
 
 #[cfg(test)]
 mod tests {
-    use super::Namespace;
-    use crate::error::CommandResult;
-    use crate::spec;
-    use crate::spec::nvm;
+    use super::*;
+    use disk_backend::Disk;
+    use disk_backend::DiskError;
+    use disk_backend::DiskIo;
+    use disk_backend::UnmapBehavior;
+    use scsi_buffers::RequestBuffers;
+
+    /// Minimal `DiskIo` shim used to feed a known `disk_id` (or `None`)
+    /// into `Namespace::identify` for testing. None of the IO methods are
+    /// expected to be called from `identify`; they panic if they ever are.
+    #[derive(Inspect)]
+    #[inspect(skip)]
+    struct TestDisk {
+        disk_id: Option<[u8; 16]>,
+    }
+
+    impl DiskIo for TestDisk {
+        fn disk_type(&self) -> &str {
+            "test"
+        }
+        fn sector_count(&self) -> u64 {
+            256
+        }
+        fn sector_size(&self) -> u32 {
+            512
+        }
+        fn disk_id(&self) -> Option<[u8; 16]> {
+            self.disk_id
+        }
+        fn physical_sector_size(&self) -> u32 {
+            512
+        }
+        fn is_fua_respected(&self) -> bool {
+            false
+        }
+        fn is_read_only(&self) -> bool {
+            false
+        }
+        fn unmap_behavior(&self) -> UnmapBehavior {
+            UnmapBehavior::Ignored
+        }
+        async fn unmap(&self, _: u64, _: u64, _: bool) -> Result<(), DiskError> {
+            unreachable!("Namespace::identify must not perform IO")
+        }
+        async fn read_vectored(&self, _: &RequestBuffers<'_>, _: u64) -> Result<(), DiskError> {
+            unreachable!("Namespace::identify must not perform IO")
+        }
+        async fn write_vectored(
+            &self,
+            _: &RequestBuffers<'_>,
+            _: u64,
+            _: bool,
+        ) -> Result<(), DiskError> {
+            unreachable!("Namespace::identify must not perform IO")
+        }
+        async fn sync_cache(&self) -> Result<(), DiskError> {
+            unreachable!("Namespace::identify must not perform IO")
+        }
+    }
+
+    /// Byte offsets in the Identify Namespace data structure (NVMe Base
+    /// Specification Figure 312 / NVM Command Set Specification Figure 97).
+    const NGUID_OFFSET: usize = 104;
+    const NGUID_LEN: usize = 16;
+    const EUI64_OFFSET: usize = 120;
+    const EUI64_LEN: usize = 8;
+
+    /// Convenience: build a `Namespace` with a `TestDisk` backing, run
+    /// `Namespace::identify`, and return the 4 KiB response buffer.
+    fn identify_buf_for(nsid: u32, disk_id: Option<[u8; 16]>) -> Vec<u8> {
+        let disk = Disk::new(TestDisk { disk_id }).unwrap();
+        let mem = GuestMemory::empty();
+        let ns = Namespace::new(mem, nsid, disk);
+        let mut buf = vec![0u8; 4096];
+        ns.identify(&mut buf);
+        buf
+    }
+
+    /// Convenience: build a `Namespace` with a `TestDisk` backing, run
+    /// `Namespace::namespace_id_descriptor`, and return the 4 KiB
+    /// response buffer.
+    fn descriptor_buf_for(nsid: u32, disk_id: Option<[u8; 16]>) -> Vec<u8> {
+        let disk = Disk::new(TestDisk { disk_id }).unwrap();
+        let mem = GuestMemory::empty();
+        let ns = Namespace::new(mem, nsid, disk);
+        let mut buf = vec![0u8; 4096];
+        ns.namespace_id_descriptor(&mut buf);
+        buf
+    }
+
+    /// When the backing disk reports a 16-byte identifier, the inline
+    /// NGUID field of the Identify Namespace response (offset 104..120)
+    /// must contain those bytes verbatim. EUI64 (offset 120..128) is
+    /// independent and must remain zero -- there is no general way to
+    /// derive a unique 8-byte EUI from the backing disk.
+    #[test]
+    fn test_identify_namespace_populates_inline_nguid_from_disk_id() {
+        let want: [u8; 16] = [
+            0x01, 0x23, 0x45, 0x67, 0x89, 0xab, 0xcd, 0xef, 0xfe, 0xdc, 0xba, 0x98, 0x76, 0x54,
+            0x32, 0x10,
+        ];
+        let buf = identify_buf_for(1, Some(want));
+        assert_eq!(
+            &buf[NGUID_OFFSET..NGUID_OFFSET + NGUID_LEN],
+            &want,
+            "inline NGUID must echo the disk_id bytes when the backing disk supplies one"
+        );
+        assert_eq!(
+            &buf[EUI64_OFFSET..EUI64_OFFSET + EUI64_LEN],
+            &[0u8; EUI64_LEN],
+            "EUI64 must remain zero -- there is no defined derivation"
+        );
+    }
+
+    /// When the backing disk reports no identifier, the inline NGUID and EUI64
+    /// fields remain zero.
+    #[test]
+    fn test_identify_namespace_leaves_nguid_zero_when_disk_has_no_id() {
+        let buf = identify_buf_for(1, None);
+        assert_eq!(
+            &buf[NGUID_OFFSET..NGUID_OFFSET + NGUID_LEN],
+            &[0u8; NGUID_LEN]
+        );
+        assert_eq!(
+            &buf[EUI64_OFFSET..EUI64_OFFSET + EUI64_LEN],
+            &[0u8; EUI64_LEN]
+        );
+    }
+
+    /// A pathological all-zero backing ID is treated as absent.
+    #[test]
+    fn test_identify_namespace_treats_zero_disk_id_as_absent() {
+        let buf = identify_buf_for(5, Some([0u8; 16]));
+        assert_eq!(
+            &buf[NGUID_OFFSET..NGUID_OFFSET + NGUID_LEN],
+            &[0u8; NGUID_LEN]
+        );
+    }
+
+    /// The NIDT=NSGUID (NGUID in the NVMe spec) descriptor returned by CNS=03h
+    /// must match the backing identity copied into the inline NGUID.
+    #[test]
+    fn test_namespace_id_descriptor_matches_inline_nguid_with_disk_id() {
+        let want: [u8; 16] = [
+            0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77, 0x88, 0x99, 0xaa, 0xbb, 0xcc, 0xdd, 0xee,
+            0xff, 0x00,
+        ];
+        let inline = identify_buf_for(1, Some(want));
+        let desc = descriptor_buf_for(1, Some(want));
+        // Descriptor layout: byte 0 = NIDT, byte 1 = NIDL, bytes 2-3
+        // reserved, bytes 4..20 = NID.
+        assert_eq!(desc[0], nvm::NamespaceIdentifierType::NSGUID.0);
+        assert_eq!(desc[1] as usize, NGUID_LEN);
+        assert_eq!(&desc[4..4 + NGUID_LEN], &want);
+        assert_eq!(
+            &desc[4..4 + NGUID_LEN],
+            &inline[NGUID_OFFSET..NGUID_OFFSET + NGUID_LEN]
+        );
+    }
+
+    /// Without a backing identity, CNS=03h contains no descriptor.
+    #[test]
+    fn test_namespace_id_descriptor_is_empty_without_disk_id() {
+        let desc = descriptor_buf_for(7, None);
+        assert!(desc.iter().all(|byte| *byte == 0));
+    }
+
     use disklayer_ram::ram_disk;
-    use guestmem::GuestMemory;
     use pal_async::async_test;
     use zerocopy::FromZeros;
     use zerocopy::IntoBytes;
