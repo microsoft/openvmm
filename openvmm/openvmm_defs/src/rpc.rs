@@ -40,8 +40,14 @@ pub enum VmRpc {
     /// Hot-add a PCIe device to a named port at runtime.
     /// Tuple is (port_name, device_resource).
     AddPcieDevice(FailableRpc<(String, Resource<PciDeviceHandleKind>), ()>),
-    /// Hot-remove a PCIe device from a named port at runtime.
-    RemovePcieDevice(FailableRpc<String, ()>),
+    /// Hot-remove a dynamically added PCIe device from a named port.
+    ///
+    /// Tuple is (port_name, orderly). Without orderly this is a surprise removal. With
+    /// orderly the port presses its attention button and the device is detached only after
+    /// the guest powers the slot off; it needs a running VM and a port configured with
+    /// `attention_button`. Timing out leaves the device attached and returns an error: a
+    /// caller that wants the device gone anyway retries with orderly false.
+    RemovePcieDevice(FailableRpc<(String, bool), ()>),
     /// Hot-add a VPCI device to VTL0 at runtime with the supplied instance ID.
     AddVpciDevice(FailableRpc<(Guid, Resource<PciDeviceHandleKind>), ()>),
     /// Hot-remove a dynamically added VPCI device by instance ID.
