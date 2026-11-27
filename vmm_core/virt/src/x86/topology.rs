@@ -124,9 +124,12 @@ fn cache_parameters_cpuid(
             eax.set_threads_sharing_cache_minus_one(0);
         }
 
-        // The level 3 cache is not per-VP; indicate that it is per-socket.
-        if eax.cache_level() == 3 {
-            eax.set_threads_sharing_cache_minus_one(topology.reserved_vps_per_socket() - 1);
+        // The level 3 cache is per-socket; saturate its 12-bit sharing count.
+        if CacheParametersEax::from(result[0]).cache_level() == 3 {
+            eax.set_threads_sharing_cache_minus_one(min(
+                0xfff,
+                topology.reserved_vps_per_socket() - 1,
+            ));
         }
 
         let eax_mask = CacheParametersEax::new()
@@ -134,12 +137,9 @@ fn cache_parameters_cpuid(
             .with_threads_sharing_cache_minus_one(0xfff);
 
         leaves.push(
-            CpuidLeaf::new(CpuidFunction::CacheParameters.0, [eax.into(), 0, 0, 0]).masked([
-                eax_mask.into(),
-                0,
-                0,
-                0,
-            ]),
+            CpuidLeaf::new(CpuidFunction::CacheParameters.0, [eax.into(), 0, 0, 0])
+                .indexed(i)
+                .masked([eax_mask.into(), 0, 0, 0]),
         )
     }
 }
@@ -360,21 +360,12 @@ mod tests {
         assert_eq!(guest(0x8000_001e, 0), host.query(0x8000_001e, 0));
     }
 
-    // IGNORED: this test fails because of two known bugs in
-    // cache_parameters_cpuid. First, it checks the cache level of a freshly
-    // created EAX instead of the host's, so the per-socket sharing for L3
-    // never applies and L3 is reported as per-core. Second, the leaf 4
-    // entries have no subleaf index, so CpuidLeafSet merges them and, once
-    // the first bug is fixed, L3's sharing count applies to every level.
-    // Re-enable this test together with both fixes by removing #[ignore].
-    //
     // Test: Compute topology leaves for an Intel processor with L1, L2, and L3
     //       caches, for a socket of 8 VPs with and without SMT.
     // Expected: L1 and L2 are shared by the SMT siblings of one core (2
     //       threads with SMT, 1 without), and L3 is shared by the whole socket
     //       (8 threads).
     #[test]
-    #[ignore = "known bug: L3 sharing is never applied and leaf 4 is unindexed"]
     fn intel_cache_sharing_is_reported_per_cache_level() {
         for (smt, per_core) in [(true, 2), (false, 1)] {
             let host = host(Vendor::INTEL, 0x1f);
@@ -409,6 +400,43 @@ mod tests {
                     expected,
                     "composed subleaf {subleaf}, smt {smt}"
                 );
+            }
+        }
+    }
+
+    // Test: Report Intel cache sharing for large socket reservations with only
+    //       one actual VP, with and without SMT.
+    // Expected: L3 sharing follows the rounded socket size up to 4096 threads,
+    //       then saturates without panicking; L1 and L2 remain per-core.
+    #[test]
+    fn intel_l3_cache_sharing_saturates_for_large_sockets() {
+        let host = host(Vendor::INTEL, 0x1f);
+        for smt in [false, true] {
+            for (vps_per_socket, l3_threads_minus_one) in [
+                (2048, 2047),
+                (2049, 4095),
+                (4096, 4095),
+                (4097, 4095),
+                (32768, 4095),
+            ] {
+                let topology = TopologyBuilder::new_x86()
+                    .vps_per_socket(vps_per_socket)
+                    .smt_enabled(smt)
+                    .build(1)
+                    .unwrap();
+                let guest = guest(&host, &topology);
+                for subleaf in 0..3 {
+                    let eax = CacheParametersEax::from(guest(4, subleaf)[0]);
+                    assert_eq!(
+                        eax.threads_sharing_cache_minus_one(),
+                        if subleaf == 2 {
+                            l3_threads_minus_one
+                        } else {
+                            u32::from(smt)
+                        },
+                        "subleaf {subleaf}, socket {vps_per_socket}, smt {smt}"
+                    );
+                }
             }
         }
     }
