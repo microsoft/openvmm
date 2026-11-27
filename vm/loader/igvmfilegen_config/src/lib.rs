@@ -1068,6 +1068,37 @@ mod test {
         assert!(checked > 0);
     }
 
+    /// `allow_unattested_devices` lets the relay offer devices that nothing
+    /// attests, as a temporary measure for SIVMs. Only the SIVM product may
+    /// enable it, and only on VBS, as OpenHCL rejects it on SNP and TDX. This
+    /// catches the flag being copied into another manifest, such as a CVM
+    /// release one.
+    #[test]
+    fn only_sivm_allows_unattested_devices() {
+        let mut allowed = 0;
+        for (name, config) in in_tree_manifests() {
+            for guest in &config.guest_configs {
+                let Some((policy, Some(device_policy))) = openhcl_policies(&guest.image) else {
+                    continue;
+                };
+                if !device_policy.allow_unattested_devices {
+                    continue;
+                }
+                assert!(
+                    matches!(policy, ProductPolicy::Sivm(_)),
+                    "{name}: only the SIVM product may allow unattested devices"
+                );
+                assert!(
+                    matches!(guest.isolation_type, ConfigIsolationType::Vbs(_)),
+                    "{name}: {:?} must not allow unattested devices",
+                    guest.isolation_type
+                );
+                allowed += 1;
+            }
+        }
+        assert!(allowed > 0);
+    }
+
     /// Developers test with the dev manifest, but the release manifest is what
     /// ships. If a change is made to only one of the pair, such as a new
     /// allowed device or a different SNP or TDX setting, the shipped image

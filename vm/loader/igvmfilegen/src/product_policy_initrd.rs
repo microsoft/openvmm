@@ -208,7 +208,7 @@ mod tests {
                 false,
             ),
             (
-                "openhcl-x64-cvm-sivm-release.toml",
+                "openhcl-x64-sivm-release.toml",
                 vec![gpu],
                 VpciRelayMode::MustBeOn,
                 true,
