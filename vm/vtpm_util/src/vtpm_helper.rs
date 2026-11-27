@@ -48,6 +48,13 @@ impl TpmEngine for CvmTpmEngine {
         }
     }
 
+    fn command_response_buffer_size(&self) -> usize {
+        match self {
+            Self::V138(_) => tpm_lib::TPM_V138_BUFFER_SIZE,
+            Self::V185(_) => tpm_lib::TPM_V185_BUFFER_SIZE,
+        }
+    }
+
     fn max_nv_index_size(&self) -> u16 {
         match self {
             Self::V138(_) => tpm_lib::TPM_V138_MAX_NV_INDEX_SIZE,
@@ -150,10 +157,7 @@ pub fn create_tpm_engine_helper(
         .map_err(anyhow::Error::from),
     }?;
 
-    let tpm_helper = TpmEngineHelper {
-        tpm_engine,
-        reply_buffer: [0u8; 4096],
-    };
+    let tpm_helper = TpmEngineHelper::new(tpm_engine);
 
     Ok((tpm_helper, nv_blob_accessor))
 }

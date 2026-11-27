@@ -47,6 +47,10 @@ impl TpmEngine for TestTpmPlatform {
             .map_err(TpmEngineError::from_error)
     }
 
+    fn command_response_buffer_size(&self) -> usize {
+        test_tpm::BUFFER_SIZE
+    }
+
     fn max_nv_index_size(&self) -> u16 {
         test_tpm::MAX_NV_INDEX_SIZE
     }
@@ -90,10 +94,7 @@ fn create_tpm_engine_helper() -> TpmEngineHelper<TestTpmPlatform> {
     )
     .expect("failed to initialize TPM test backend");
 
-    TpmEngineHelper {
-        tpm_engine,
-        reply_buffer: [0u8; 4096],
-    }
+    TpmEngineHelper::new(tpm_engine)
 }
 
 fn restart_tpm_engine(
