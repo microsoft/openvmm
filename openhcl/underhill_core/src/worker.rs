@@ -2086,6 +2086,20 @@ async fn new_underhill_vm(
     let proto_partition = UhProtoPartition::new(&params, |cpu| tp.driver(cpu).clone())
         .context("failed to create prototype partition")?;
 
+    let pcat_io_combined = matches!(
+        env_cfg.test_configuration,
+        Some(TestScenarioConfig::PcatIoCombined)
+    );
+    if pcat_io_combined {
+        anyhow::ensure!(
+            !isolation.is_isolated(),
+            "PCAT_IO_COMBINED is only supported for non-isolated VMs"
+        );
+        sparse_mmap::unix::disable_process_thp()
+            .context("PCAT_IO_COMBINED failed to disable process THP")?;
+        tracing::info!("PCAT_IO_COMBINED: verified process THP disabled before VTL0 mappings");
+    }
+
     let gm = underhill_mem::init(&underhill_mem::Init {
         processor_topology: &processor_topology,
         isolation,
@@ -2595,7 +2609,11 @@ async fn new_underhill_vm(
     //
     // Currently we always bounce for CVM as well, due to underhill_mem not
     // supporting registering shared or private memory with the kernel.
-    let always_bounce = cfg!(guest_arch = "aarch64") || isolation.is_hardware_isolated();
+    let always_bounce =
+        cfg!(guest_arch = "aarch64") || isolation.is_hardware_isolated() || pcat_io_combined;
+    if pcat_io_combined {
+        tracing::info!("PCAT_IO_COMBINED: forcing block-device bounce buffers");
+    }
     resolver.add_async_resolver::<DiskHandleKind, _, BlockDeviceDiskHandle, _>(
         BlockDeviceResolver::new(
             Some(uevent_listener.clone()),
