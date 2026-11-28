@@ -45,9 +45,12 @@ pub(crate) enum DiskDrive {
 impl DiskDrive {
     pub fn new(media: DriveMedia, disk_path: IdePath) -> Result<Self, NewDeviceError> {
         match media {
-            DriveMedia::HardDrive(device) => {
-                Ok(DiskDrive::HardDevice(HardDrive::new(device, disk_path)?))
-            }
+            DriveMedia::HardDrive(device) => Ok(DiskDrive::HardDevice(HardDrive::new(
+                device, disk_path, false,
+            )?)),
+            DriveMedia::HardDriveVerified(device) => Ok(DiskDrive::HardDevice(HardDrive::new(
+                device, disk_path, true,
+            )?)),
             DriveMedia::OpticalDrive(device) => {
                 Ok(DiskDrive::OpticalDevice(AtapiDrive::new(device, disk_path)))
             }

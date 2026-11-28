@@ -38,6 +38,7 @@ use scsi_buffers::BounceBufferTracker;
 use scsi_buffers::RequestBuffers;
 use std::fmt::Debug;
 use std::fs;
+use std::os::unix::fs::FileExt;
 use std::os::unix::io::AsRawFd;
 use std::os::unix::prelude::FileTypeExt;
 use std::os::unix::prelude::MetadataExt;
@@ -116,6 +117,11 @@ pub struct BlockDevice {
     #[inspect(skip)]
     bounce_buffer_tracker: Option<Arc<BounceBufferTracker>>,
     always_bounce: bool,
+    #[inspect(skip)]
+    read_verification_file: Option<Arc<fs::File>>,
+    #[inspect(skip)]
+    read_verification_lock: futures::lock::Mutex<()>,
+    verified_reads: AtomicU64,
 }
 
 #[derive(Inspect, Debug, Default)]
@@ -191,6 +197,8 @@ pub enum NewDeviceError {
     InvalidDiskSize(u64),
     #[error("driver does not support io-uring")]
     NoIoUring,
+    #[error("failed to open independent buffered read-verification file")]
+    ReadVerificationFile(#[source] std::io::Error),
 }
 
 impl BlockDevice {
@@ -201,6 +209,7 @@ impl BlockDevice {
     /// * `read_only` - Indicates whether the device is opened for read-only access.
     /// * `driver` - The async driver to use for issuing IOs (must support io-uring).
     /// * `always_bounce` - Whether to always use bounce buffers for IOs, even for those that are aligned.
+    /// * `read_verification` - Whether to compare reads with an independent buffered file descriptor.
     pub async fn new(
         file: fs::File,
         read_only: bool,
@@ -208,6 +217,7 @@ impl BlockDevice {
         uevent_listener: Option<&UeventListener>,
         bounce_buffer_tracker: Option<Arc<BounceBufferTracker>>,
         always_bounce: bool,
+        read_verification: bool,
     ) -> Result<BlockDevice, NewDeviceError> {
         if !driver.io_uring_probe(opcode::Read::CODE) {
             return Err(NewDeviceError::NoIoUring);
@@ -216,6 +226,16 @@ impl BlockDevice {
         assert!(driver.io_uring_probe(opcode::Readv::CODE));
         assert!(driver.io_uring_probe(opcode::Writev::CODE));
         assert!(driver.io_uring_probe(opcode::Fsync::CODE));
+
+        let read_verification_file = if read_verification {
+            let path = PathBuf::from(format!("/proc/self/fd/{}", file.as_raw_fd()));
+            Some(Arc::new(
+                open_file_for_block(&path, true, false)
+                    .map_err(NewDeviceError::ReadVerificationFile)?,
+            ))
+        } else {
+            None
+        };
 
         let metadata = file.metadata().map_err(DiskError::Io)?;
 
@@ -278,6 +298,9 @@ impl BlockDevice {
             resized_acked: 0.into(),
             bounce_buffer_tracker,
             always_bounce,
+            read_verification_file,
+            read_verification_lock: Default::default(),
+            verified_reads: 0.into(),
         };
 
         Ok(device)
@@ -295,6 +318,127 @@ impl BlockDevice {
         } else {
             MaybeBounceBuffer::Untracked(BounceBuffer::new(size))
         })
+    }
+
+    async fn buffered_reference(
+        file: Arc<fs::File>,
+        offset: u64,
+        len: usize,
+    ) -> std::io::Result<Vec<u8>> {
+        unblock(move || {
+            let mut expected = vec![0; len];
+            file.read_exact_at(&mut expected, offset)?;
+            Ok::<_, std::io::Error>(expected)
+        })
+        .await
+    }
+
+    async fn fresh_direct_read(&self, sector: u64, len: usize) -> Result<Vec<u8>, DiskError> {
+        let mut bounce = MaybeBounceBuffer::Untracked(BounceBuffer::new(len));
+        let io_vecs = bounce.io_vecs();
+        // SAFETY: this fresh buffer remains alive until the operation completes
+        // or is cancelled on drop, as for read_vectored.
+        let bytes_read = unsafe {
+            self.driver.io_uring_submit(
+                opcode::Readv::new(
+                    types::Fd(self.file.as_raw_fd()),
+                    io_vecs.as_ptr().cast(),
+                    io_vecs.len() as u32,
+                )
+                .offset(sector * self.sector_size as u64)
+                .build(),
+            )
+        }
+        .await
+        .map_err(|error| self.map_io_error(error))?;
+        if bytes_read != len as i32 {
+            tracing::error!(
+                sector,
+                len,
+                bytes_read,
+                "PCAT_TRIANGULATE: short direct reread"
+            );
+            return Err(DiskError::IllegalBlock);
+        }
+        Ok(bounce.as_mut_bytes().to_vec())
+    }
+
+    async fn verify_read(
+        &self,
+        file: &Arc<fs::File>,
+        sector: u64,
+        actual: &[u8],
+        buffers: &RequestBuffers<'_>,
+    ) -> Result<(), DiskError> {
+        let len = actual.len();
+        let offset = sector * self.sector_size as u64;
+        let expected = Self::buffered_reference(file.clone(), offset, len)
+            .await
+            .map_err(|error| {
+                tracing::error!(
+                    sector,
+                    len,
+                    error = &error as &dyn std::error::Error,
+                    "PCAT_READ_VERIFY: independent buffered read failed"
+                );
+                DiskError::Io(error)
+            })?;
+
+        if let Some(first_byte) = actual.iter().zip(&expected).position(|(a, b)| a != b) {
+            tracing::error!(
+                sector,
+                len,
+                first_byte,
+                "PCAT_READ_VERIFY: request buffer differs from independent buffered read"
+            );
+            let fresh = self.fresh_direct_read(sector, len).await?;
+            let repeated = Self::buffered_reference(file.clone(), offset, len)
+                .await
+                .map_err(|error| {
+                    tracing::error!(
+                        sector,
+                        len,
+                        error = &error as &dyn std::error::Error,
+                        "PCAT_TRIANGULATE: repeated reference read failed"
+                    );
+                    DiskError::Io(error)
+                })?;
+            let mut live = vec![0; len];
+            buffers.reader().read(&mut live)?;
+            let digest = |bytes: &[u8]| {
+                use std::hash::Hash;
+                use std::hash::Hasher;
+                let mut hasher = std::collections::hash_map::DefaultHasher::new();
+                bytes.hash(&mut hasher);
+                hasher.finish()
+            };
+            tracing::error!(
+                sector,
+                len,
+                first_byte,
+                original_digest = digest(actual),
+                reference_digest = digest(&expected),
+                direct_digest = digest(&fresh),
+                repeated_reference_digest = digest(&repeated),
+                live_digest = digest(&live),
+                buffer_changed = actual != live,
+                reference_changed = expected != repeated,
+                direct_matches_reference = fresh == repeated,
+                direct_matches_original = fresh == actual,
+                "PCAT_TRIANGULATE: mismatch read matrix"
+            );
+            return Err(DiskError::Io(std::io::Error::other(format!(
+                "PCAT_READ_VERIFY mismatch: sector={sector} len={len} first_byte={first_byte}"
+            ))));
+        }
+        if self.verified_reads.fetch_add(1, Ordering::Relaxed) < 128 {
+            tracing::info!(
+                sector,
+                len,
+                "PCAT_READ_VERIFY: verified request buffer against independent buffered read"
+            );
+        }
+        Ok(())
     }
 
     fn handle_resize(&self) {
@@ -587,15 +731,14 @@ impl DiskIo for BlockDevice {
         tracing::trace!(sector, io_size, "read_vectored");
 
         let mut bounce_buffer = None;
-        let locked;
+        let mut locked = None;
         // Memory behind an emulated IOMMU cannot be locked for zero-copy IO, so
         // fall back to bounce buffering in that case.
         let should_bounce = self.always_bounce
             || !buffers.is_aligned(self.sector_size() as usize)
             || !buffers.guest_memory().supports_kernel_lock();
         let io_vecs = if !should_bounce {
-            locked = buffers.lock(true)?;
-            locked.io_vecs()
+            locked.insert(buffers.lock(true)?).io_vecs()
         } else {
             tracing::trace!("bounce buffering IO");
 
@@ -621,6 +764,7 @@ impl DiskIo for BlockDevice {
         }
         .await
         .map_err(|err| self.map_io_error(err))?;
+        drop(locked);
         tracing::trace!(bytes_read, "read_vectored");
         if bytes_read != io_size as i32 {
             return Err(DiskError::IllegalBlock);
@@ -628,6 +772,12 @@ impl DiskIo for BlockDevice {
 
         if let Some(mut bounce_buffer) = bounce_buffer {
             buffers.writer().write(bounce_buffer.as_mut_bytes())?;
+        }
+        if let Some(file) = &self.read_verification_file {
+            let _guard = self.read_verification_lock.lock().await;
+            let mut actual = vec![0; io_size];
+            buffers.reader().read(&mut actual)?;
+            self.verify_read(file, sector, &actual, buffers).await?;
         }
         Ok(())
     }
@@ -988,7 +1138,10 @@ mod tests {
         output.contains("5.13")
     }
 
-    fn new_block_device_from(file: fs::File) -> Result<BlockDevice, NewDeviceError> {
+    fn new_block_device_from(
+        file: fs::File,
+        read_verification: bool,
+    ) -> Result<BlockDevice, NewDeviceError> {
         // TODO: switch to std::sync::OnceLock once `get_or_try_init` is stable
         static POOL: OnceCell<PoolClient> = OnceCell::new();
 
@@ -1008,13 +1161,37 @@ mod tests {
             None,
             None,
             false,
+            read_verification,
         ))
     }
 
     fn new_block_device() -> Result<BlockDevice, NewDeviceError> {
         let test_file = tempfile::tempfile().unwrap();
         test_file.set_len(1024 * 64).unwrap();
-        new_block_device_from(test_file)
+        new_block_device_from(test_file, false)
+    }
+
+    #[test]
+    fn independent_read_verification_detects_corruption() {
+        let file = tempfile::tempfile().unwrap();
+        file.set_len(65536).unwrap();
+        let mut data: Vec<u8> = (0..=250u8).cycle().take(4096).collect();
+        file.write_all_at(&data, 0).unwrap();
+        let device = new_block_device_from(file, true).unwrap();
+        let verifier = device.read_verification_file.as_ref().unwrap();
+        let memory = GuestMemory::allocate(data.len());
+        memory.write_at(0, &data).unwrap();
+        let pages = [0];
+        let range = guestmem::ranges::PagedRange::new(0, data.len(), &pages).unwrap();
+        let buffers = RequestBuffers::new(&memory, range, true);
+        block_on(device.verify_read(verifier, 0, &data, &buffers)).unwrap();
+        data[37] ^= 1;
+        memory.write_at(0, &data).unwrap();
+        let error = block_on(device.verify_read(verifier, 0, &data, &buffers)).unwrap_err();
+        let DiskError::Io(error) = error else {
+            panic!("expected an I/O error for mismatched read data");
+        };
+        assert!(error.to_string().contains("first_byte=37"));
     }
 
     /// A loop device over a temporary file, detached when dropped.
@@ -1116,7 +1293,7 @@ mod tests {
             .write(true)
             .open(&loop_device.path)
             .unwrap();
-        let disk = disk_backend::Disk::new(new_block_device_from(file).unwrap()).unwrap();
+        let disk = disk_backend::Disk::new(new_block_device_from(file, false).unwrap()).unwrap();
         storage_tests::sector_range::test_disk_sector_range_conformance(&disk).await;
     }
 
