@@ -18,11 +18,11 @@ let
   hashes = {
     hcl-main = {
       std = {
-        x64 = "sha256-xaHexdkcb4g/0BdzQ0mY1ksq7tKsr8n7IuL2fakD6Tg=";
-        arm64 = "sha256-jgEs9b1121JYjwFoDOlfVxIcdpBdEX5ASPVOGzz87Gs=";
+        x64 = "sha256-f49F75tyqnN5sTpIuXmbYqhdVVpmA9vu8pkJF0v/Mo4=";
+        arm64 = "sha256-HuyIjM6LrcipmpcuB5dmwWs3ViIJ53/sjfY6Uf6Vnz0=";
       };
       cvm = {
-        x64 = "sha256-FvfS8/RKq1hkMUsn35gkp8RK8Y/JiPToIrP2aigjeAw=";
+        x64 = "sha256-XNA8F3/dsvqzrvPIhMwUvnbTiKRgFXZBsjG2AXGsEDU=";
         arm64 = throw "openhcl-kernel: cvm arm64 variant not available";
       };
     };
