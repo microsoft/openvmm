@@ -344,6 +344,16 @@ impl PetriVmOpenVmm {
         ) -> anyhow::Result<()>
     );
     petri_vm_fn!(
+        /// Request an orderly eject on an ACPI managed PCIe port.
+        ///
+        /// A timeout does not cancel an eject notification sent to the guest.
+        pub async fn eject_pcie_device(
+            &mut self,
+            port_name: String,
+            timeout: Duration
+        ) -> anyhow::Result<()>
+    );
+    petri_vm_fn!(
         /// Resets the hardware state of the VM, simulating a power cycle.
         pub async fn reset(&mut self) -> anyhow::Result<()>
     );
@@ -591,6 +601,14 @@ impl PetriVmInner {
 
     async fn remove_pcie_device(&mut self, port_name: String) -> anyhow::Result<()> {
         self.worker.remove_pcie_device(port_name).await
+    }
+
+    async fn eject_pcie_device(
+        &mut self,
+        port_name: String,
+        timeout: Duration,
+    ) -> anyhow::Result<()> {
+        self.worker.eject_pcie_device(port_name, timeout).await
     }
 
     async fn add_vpci_device(

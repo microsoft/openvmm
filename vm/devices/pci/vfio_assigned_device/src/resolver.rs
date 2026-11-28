@@ -91,6 +91,10 @@ impl AsyncResolveResource<PciDeviceHandleKind, VfioDeviceHandle> for VfioDeviceR
             ),
         }
 
+        let memory_mapper = input
+            .shared_mem_mapper
+            .context("memory mapper is required for VFIO device assignment")?;
+
         tracing::info!(pci_id, "opening VFIO device");
 
         // Ask the container manager to prepare (or reuse) a container and
@@ -100,10 +104,6 @@ impl AsyncResolveResource<PciDeviceHandleKind, VfioDeviceHandle> for VfioDeviceR
             .prepare_device(pci_id.clone(), group)
             .await
             .context("VFIO container manager failed")?;
-
-        let memory_mapper = input
-            .shared_mem_mapper
-            .context("memory mapper is required for VFIO device assignment")?;
 
         let device = VfioAssignedPciDevice::new(
             binding,
@@ -199,6 +199,10 @@ impl AsyncResolveResource<PciDeviceHandleKind, VfioCdevDeviceHandle> for VfioCde
             ),
         };
 
+        let memory_mapper = input
+            .shared_mem_mapper
+            .context("memory mapper is required for VFIO device assignment")?;
+
         // The manager shares one vIOMMU per emulated SMMU, matched by the
         // identity (`Arc::ptr_eq`) of the SMMU's shared state. Hand it the
         // `Arc` directly; `None` signals the plain identity-DMA path (no
@@ -265,10 +269,6 @@ impl AsyncResolveResource<PciDeviceHandleKind, VfioCdevDeviceHandle> for VfioCde
 
             tracing::info!(pci_id, "registered iommufd nesting backend with SMMU");
         }
-
-        let memory_mapper = input
-            .shared_mem_mapper
-            .context("memory mapper is required for VFIO device assignment")?;
 
         let assigned = VfioAssignedPciDevice::from_cdev(
             device,

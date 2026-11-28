@@ -4,7 +4,6 @@
 //! Shared ACPI power-button description for DSDT and SSDT generation.
 
 use crate::aml::*;
-use alloc::vec;
 
 pub(crate) fn device(gsi: u32, mmio_base: u32) -> Device {
     let mut button = Device::new(b"PBTN");
@@ -29,36 +28,36 @@ pub(crate) fn device(gsi: u32, mmio_base: u32) -> Device {
         body: handle_event,
     });
 
+    let mut ged = generic_event_device(b"\\_SB.OVPB", 0, gsi, mmio_base, 4);
+    add_mmio_dword_fields(&mut ged, b"PREG", mmio_base, &[*b"PEND"]);
+    ged.add_object(&button);
+    ged.add_object(&event);
+    ged
+}
+
+pub(crate) fn generic_event_device(
+    name: &[u8],
+    uid: u64,
+    gsi: u32,
+    mmio_base: u32,
+    len: u32,
+) -> Device {
     let interrupt = Interrupt::new(gsi);
     let mut crs = CurrentResourceSettings::new();
     crs.add_resource(&interrupt);
 
     // GED _CRS must contain only interrupts; reserve the register separately.
     let mut mmio_crs = CurrentResourceSettings::new();
-    mmio_crs.add_resource(&Memory32Fixed::new(mmio_base, 4, true));
+    mmio_crs.add_resource(&Memory32Fixed::new(mmio_base, len, true));
     let mut mmio = Device::new(b"MRES");
     mmio.add_object(&NamedObject::new(b"_HID", &EisaId(*b"PNP0C02")));
     mmio.add_object(&mmio_crs);
 
-    // OperationRegion (PREG, SystemMemory, mmio_base, 4)
-    let mut region = vec![0x5b, 0x80];
-    region.extend_from_slice(&encode_name(b"PREG"));
-    region.push(0);
-    region.extend_from_slice(&encode_integer(mmio_base.into()));
-    region.extend_from_slice(&encode_integer(4));
-
-    let mut ged = Device::new(b"\\_SB.OVPB");
+    let mut ged = Device::new(name);
     ged.add_object(&NamedString::new(b"_HID", b"ACPI0013"));
-    ged.add_object(&NamedInteger::new(b"_UID", 0));
+    ged.add_object(&NamedInteger::new(b"_UID", uid));
     ged.add_object(&crs);
     ged.add_object(&mmio);
-    ged.add_object(&GenericObject(region));
-    // Field (PREG, DWordAcc, NoLock, Preserve) { PEND, 32 }
-    ged.add_object(&GenericObject([
-        0x5b, 0x81, 0x0b, b'P', b'R', b'E', b'G', 3, b'P', b'E', b'N', b'D', 32,
-    ]));
-    ged.add_object(&button);
-    ged.add_object(&event);
     ged
 }
 

@@ -102,6 +102,31 @@ impl AmlObject for EisaId {
     }
 }
 
+/// Adds a SystemMemory operation region and consecutive 32-bit fields.
+pub fn add_mmio_dword_fields(
+    device: &mut Device,
+    region_name: &[u8; 4],
+    base: u32,
+    fields: &[[u8; 4]],
+) {
+    let mut region = alloc::vec![0x5b, 0x80];
+    region.extend_from_slice(region_name);
+    region.push(0); // SystemMemory
+    region.extend_from_slice(&encode_integer(base.into()));
+    region.extend_from_slice(&encode_integer((fields.len() * 4) as u64));
+    device.add_object(&GenericObject(region));
+
+    let mut field = alloc::vec![0x5b, 0x81];
+    field.extend_from_slice(&encode_package_len(5 + fields.len() * 5));
+    field.extend_from_slice(region_name);
+    field.push(3); // DWordAcc, NoLock, Preserve
+    for name in fields {
+        field.extend_from_slice(name);
+        field.push(32);
+    }
+    device.add_object(&GenericObject(field));
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

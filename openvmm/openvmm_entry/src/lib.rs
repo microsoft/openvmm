@@ -2166,6 +2166,7 @@ async fn vm_config_from_command_line(
         load_mode,
         floppy_disks,
         pcie_root_complexes,
+        pcie_acpi_hotplug_port: None,
         pcie_ecam_below_4gb: opt.pcie_ecam_below_4gb,
         #[cfg(target_os = "linux")]
         pcie_devices,

@@ -666,6 +666,13 @@ impl PetriVmConfigOpenVmm {
         self
     }
 
+    /// Use ACPI instead of native PCIe hotplug on a named root port.
+    /// The port must start empty and be the only hotplug port on its bridge.
+    pub fn with_pcie_acpi_hotplug_port(mut self, port_name: &str) -> Self {
+        self.config.pcie_acpi_hotplug_port = Some(port_name.to_owned());
+        self
+    }
+
     /// Add a PCIe switch to the VM.
     pub fn with_pcie_switch(
         mut self,

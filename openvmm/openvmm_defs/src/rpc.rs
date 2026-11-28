@@ -42,6 +42,8 @@ pub enum VmRpc {
     AddPcieDevice(FailableRpc<(String, Resource<PciDeviceHandleKind>), ()>),
     /// Hot-remove a PCIe device from a named port at runtime.
     RemovePcieDevice(FailableRpc<String, ()>),
+    /// Request orderly ACPI ejection and wait for host cleanup.
+    EjectPcieDevice(FailableRpc<(String, std::time::Duration), ()>),
     /// Hot-add a VPCI device to VTL0 at runtime with the supplied instance ID.
     AddVpciDevice(FailableRpc<(Guid, Resource<PciDeviceHandleKind>), ()>),
     /// Hot-remove a dynamically added VPCI device by instance ID.
@@ -90,6 +92,7 @@ impl fmt::Debug for VmRpc {
             VmRpc::UpdateCliParams(_) => "UpdateCliParams",
             VmRpc::AddPcieDevice(_) => "AddPcieDevice",
             VmRpc::RemovePcieDevice(_) => "RemovePcieDevice",
+            VmRpc::EjectPcieDevice(_) => "EjectPcieDevice",
             VmRpc::AddVpciDevice(_) => "AddVpciDevice",
             VmRpc::RemoveVpciDevice(_) => "RemoveVpciDevice",
             VmRpc::DumpState(_) => "DumpState",

@@ -1,6 +1,7 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
+mod acpi_pcie;
 mod amd_iommu_wiring;
 mod device_removal;
 mod dump;
@@ -200,6 +201,7 @@ impl Manifest {
             pcie_root_complexes: config.pcie_root_complexes,
             pcie_ecam_below_4gb: config.pcie_ecam_below_4gb,
             pcie_devices: config.pcie_devices,
+            pcie_acpi_hotplug_port: config.pcie_acpi_hotplug_port,
             pcie_switches: config.pcie_switches,
             pcie_generic_initiators: config.pcie_generic_initiators,
             vpci_devices: config.vpci_devices,
@@ -244,6 +246,7 @@ pub struct Manifest {
     pcie_root_complexes: Vec<PcieRootComplexConfig>,
     pcie_ecam_below_4gb: bool,
     pcie_devices: Vec<PcieDeviceConfig>,
+    pcie_acpi_hotplug_port: Option<String>,
     pcie_switches: Vec<PcieSwitchConfig>,
     pcie_generic_initiators: Vec<openvmm_defs::config::PcieGenericInitiatorConfig>,
     vpci_devices: Vec<VpciDeviceConfig>,
@@ -943,6 +946,7 @@ struct LoadedVmInner {
     ioapic_iommu_rid: Option<u16>,
     pcie_host_bridges: Vec<PcieHostBridge>,
     pcie_root_complexes: Vec<Arc<closeable_mutex::CloseableMutex<GenericPcieRootComplex>>>,
+    acpi_pcie_hotplug: Option<acpi_pcie::AcpiPcieHotplug>,
     /// Sources for SRAT generic-initiator entries, one per
     /// [`PcieGenericInitiatorConfig`](openvmm_defs::config::PcieGenericInitiatorConfig).
     /// Each holds the port's live bus-range handle, read at ACPI-build time
@@ -2221,6 +2225,34 @@ impl InitializedVm {
         }
         let mut deferred_msi_conns: Vec<DeferredMsiConn> = Vec::new();
 
+        if let Some(port) = &cfg.pcie_acpi_hotplug_port {
+            anyhow::ensure!(
+                cfg!(guest_arch = "x86_64")
+                    && matches!(
+                        cfg.load_mode,
+                        LoadMode::Linux {
+                            boot_mode: openvmm_defs::config::LinuxDirectBootMode::Acpi,
+                            ..
+                        }
+                    )
+                    && cfg.chipset_capabilities.with_ioapic,
+                "ACPI PCIe hotplug requires x86 Linux direct boot with an IOAPIC"
+            );
+            anyhow::ensure!(
+                cfg.chipset_capabilities.acpi_power_button_gsi != Some(acpi_pcie::IRQ),
+                "ACPI PCIe hotplug and the ACPI power button cannot share GSI {}",
+                acpi_pcie::IRQ
+            );
+            anyhow::ensure!(
+                !cfg.pcie_devices.iter().any(|dev| &dev.port_name == port)
+                    && !cfg
+                        .pcie_switches
+                        .iter()
+                        .any(|switch| &switch.parent_port == port),
+                "ACPI PCIe hotplug port '{port}' must be empty at boot"
+            );
+        }
+        let mut acpi_pcie_hotplug = None;
         let (mut pcie_host_bridges, pcie_root_complexes) = {
             pcie_topology::validate_pcie_root_complexes(&cfg.pcie_root_complexes)?;
             let mut pcie_host_bridges = Vec::new();
@@ -2388,6 +2420,58 @@ impl InitializedVm {
                         || matches!(&cfg.load_mode, LoadMode::Uefi { .. }),
                 });
 
+                if let Some(port) = cfg
+                    .pcie_acpi_hotplug_port
+                    .as_ref()
+                    .filter(|name| rc.ports.iter().any(|port| &port.name == *name))
+                {
+                    anyhow::ensure!(
+                        acpi_pcie_hotplug.is_none()
+                            && rc.cxl.is_none()
+                            && !rc
+                                .ports
+                                .iter()
+                                .any(|other| other.cxl || (other.hotplug && &other.name != port)),
+                        "ACPI PCIe hotplug requires a unique port on a non-CXL host bridge without other native hotplug ports"
+                    );
+                    anyhow::ensure!(
+                        !cfg.pcie_switches.iter().any(|switch| {
+                            rc.ports.iter().any(|port| port.name == switch.parent_port)
+                        }),
+                        "ACPI PCIe hotplug does not support switches on its host bridge"
+                    );
+                    let port_devfn = root_complex
+                        .lock()
+                        .downstream_ports()
+                        .iter()
+                        .find(|p| p.name.as_ref() == port)
+                        .context("missing ACPI PCIe root port")?
+                        .devfn;
+                    let slot = acpi::ssdt::PcieHotplugSlot {
+                        bridge_index: rc.index,
+                        port_devfn,
+                        gsi: acpi_pcie::IRQ,
+                        mmio_base: acpi_pcie::BASE,
+                    };
+                    let (send, ejected) = mesh::channel();
+                    let device =
+                        chipset_builder
+                            .arc_mutex_device("acpi-pcie-hotplug")
+                            .add(|services| {
+                                acpi_pcie::AcpiPcieEventDevice::new(
+                                    root_complex.clone(),
+                                    slot,
+                                    services.new_line(IRQ_LINE_SET, "interrupt", slot.gsi),
+                                    send,
+                                )
+                            })?;
+                    acpi_pcie_hotplug = Some(acpi_pcie::AcpiPcieHotplug {
+                        port: port.clone(),
+                        slot,
+                        device,
+                        ejected,
+                    });
+                }
                 pcie_root_complexes.push(root_complex.clone());
 
                 let bus_id = vmotherboard::BusId::new(&rc.name);
@@ -2396,6 +2480,10 @@ impl InitializedVm {
 
             (pcie_host_bridges, pcie_root_complexes)
         };
+        anyhow::ensure!(
+            cfg.pcie_acpi_hotplug_port.is_none() || acpi_pcie_hotplug.is_some(),
+            "ACPI PCIe hotplug port was not found in the root complexes"
+        );
 
         // Build a port-name→(segment, bus_range) map covering all ports in
         // the PCIe topology (root complex ports and switch downstream ports).
@@ -3228,6 +3316,7 @@ impl InitializedVm {
                 ioapic_iommu_rid,
                 pcie_host_bridges,
                 pcie_root_complexes,
+                acpi_pcie_hotplug,
                 generic_initiator_sources,
                 pcie_hotplug_devices: Vec::new(),
                 dynamic_vpci_devices: Vec::new(),
@@ -3418,19 +3507,21 @@ impl LoadedVmInner {
                     self.partition.caps(),
                     &self.processor_topology.vp_arch(VpIndex::BSP),
                     |gpa| {
-                        let tables = acpi_builder.build_acpi_tables(gpa, |dsdt| {
-                            add_devices_to_dsdt_x64(
-                                dsdt,
-                                &self.chipset_cfg,
-                                &self.chipset_capabilities,
-                                enable_serial,
-                                self.vmbus_server.is_some(),
-                                &self.chipset_mmio,
-                                self.virtio_mmio_region,
-                                self.virtio_mmio_irq,
-                                &self.pci_legacy_interrupts,
-                            )
-                        });
+                        let slot = self.acpi_pcie_hotplug.as_ref().map(|hotplug| hotplug.slot);
+                        let tables =
+                            acpi_builder.build_acpi_tables_with_pcie_hotplug(gpa, slot, |dsdt| {
+                                add_devices_to_dsdt_x64(
+                                    dsdt,
+                                    &self.chipset_cfg,
+                                    &self.chipset_capabilities,
+                                    enable_serial,
+                                    self.vmbus_server.is_some(),
+                                    &self.chipset_mmio,
+                                    self.virtio_mmio_region,
+                                    self.virtio_mmio_irq,
+                                    &self.pci_legacy_interrupts,
+                                )
+                            });
 
                         loader::linux::AcpiTables {
                             rsdp: tables.rsdp,
@@ -3756,6 +3847,7 @@ impl LoadedVm {
             VmRpc(Result<VmRpc, mesh::RecvError>),
             Halt(Result<HaltReason, mesh::RecvError>),
             DeviceRemoved,
+            AcpiPcieEjected(Option<acpi_pcie::EjectResponse>),
         }
 
         // Start a task to handle state unit inspections by filtering the worker
@@ -3793,11 +3885,21 @@ impl LoadedVm {
                 let b = worker_rpc.recv().map(Event::WorkerRpc);
                 let c = self.inner.halt_recv.recv().map(Event::Halt);
                 let d = device_removal.wait().map(|()| Event::DeviceRemoved);
-                (a, b, c, d).race().await
+                let e = async {
+                    if let Some(hotplug) = &mut self.inner.acpi_pcie_hotplug {
+                        match hotplug.ejected.recv().await {
+                            Ok(response) => return Event::AcpiPcieEjected(response),
+                            Err(error) => tracing::error!(%error, "ACPI PCIe eject channel closed"),
+                        }
+                    }
+                    std::future::pending().await
+                };
+                (a, b, c, d, e).race().await
             };
 
             let wait_for_removal = match &event {
                 Event::WorkerRpc(Ok(WorkerRpc::Restart(_))) => true,
+                Event::AcpiPcieEjected(_) => true,
                 Event::VmRpc(Ok(rpc)) => !can_run_during_device_removal(rpc),
                 _ => false,
             };
@@ -3808,6 +3910,28 @@ impl LoadedVm {
 
             match event {
                 Event::DeviceRemoved => {}
+                Event::AcpiPcieEjected(response) => {
+                    let port = &self.inner.acpi_pcie_hotplug.as_ref()
+                        .expect("eject event requires an ACPI PCIe slot").port;
+                    if let Some(index) = self.inner.pcie_hotplug_devices.iter()
+                        .position(|(name, _, _)| name == port)
+                    {
+                        let (_, unit, device) = self.inner.pcie_hotplug_devices.remove(index);
+                        device_removal.start(driver, async move {
+                            unit.remove().await;
+                            drop(device);
+                            if let Some(response) = response {
+                                response.complete(Ok(()));
+                            }
+                        });
+                    } else {
+                        let error = anyhow::anyhow!("ACPI PCIe eject on '{port}' has no tracked device");
+                        tracing::error!(%error);
+                        if let Some(response) = response {
+                            response.complete(Err(RemoteError::new(error)));
+                        }
+                    }
+                }
                 Event::WorkerRpc(Err(_)) => break,
                 Event::WorkerRpc(Ok(message)) => match message {
                     WorkerRpc::Stop => break,
@@ -3956,6 +4080,7 @@ impl LoadedVm {
                             if !self.inner.partition.supports_reset() {
                                 return Err(PulseSaveRestoreError::ResetNotSupported);
                             }
+                            self.ensure_acpi_pcie_slot_idle_for_save()?;
                             let paused = self.pause().await;
                             self.save_reset_restore().await?;
 
@@ -4000,21 +4125,24 @@ impl LoadedVm {
                     }
                     VmRpc::AddPcieDevice(rpc) => {
                         rpc.handle_failable(async |(port_name, resource)| {
-                            // Find the root complex and its index for the named port.
-                            let (rc_idx, rc) = self.inner.pcie_root_complexes.iter()
+                            let acpi_slot = self.inner.acpi_pcie_hotplug.as_ref()
+                                .filter(|slot| slot.port == port_name);
+                            if acpi_slot.is_some() {
+                                anyhow::ensure!(
+                                    !self.inner.pcie_hotplug_devices.iter().any(|(name, _, _)| name == &port_name),
+                                    "ACPI PCIe slot '{port_name}' is occupied or awaiting cleanup"
+                                );
+                            }
+                            let (rc_idx, rc, bus_range) = self.inner.pcie_root_complexes.iter()
                                 .enumerate()
-                                .find(|(_, rc)| {
-                                    rc.lock().downstream_ports().iter().any(|p| p.name.as_ref() == port_name.as_str())
+                                .find_map(|(idx, rc)| {
+                                    rc.lock()
+                                        .downstream_ports()
+                                        .into_iter()
+                                        .find(|port| port.name.as_ref() == port_name)
+                                        .map(|port| (idx, rc, port.bus_range))
                                 })
                                 .ok_or_else(|| anyhow::anyhow!("port '{}' not found in any root complex", port_name))?;
-
-                            // Get the bus_range from the port's config space emulator.
-                            let bus_range = rc.lock()
-                                .downstream_ports()
-                                .into_iter()
-                                .find(|p| p.name.as_ref() == port_name.as_str())
-                                .expect("port was just found above")
-                                .bus_range;
 
                             let segment = self.inner.pcie_host_bridges[rc_idx].segment;
                             let msi_conn = pci_core::msi::MsiConnection::new();
@@ -4040,11 +4168,7 @@ impl LoadedVm {
                             );
 
                             let mapper = self.inner.memory_manager.device_memory_mapper();
-                            let (unit, device) = self.inner.chipset_devices.add_dyn_device(
-                                &self.inner.driver_source,
-                                &self.state_units,
-                                format!("pcie-hotplug:{}", port_name),
-                                async |register_mmio| {
+                            let resolve = async |register_mmio: &mut (dyn chipset_device::mmio::RegisterMmioIntercept + Send)| {
                                     self.inner.resolver
                                         .resolve(
                                             resource,
@@ -4052,15 +4176,31 @@ impl LoadedVm {
                                                 dma_target: &pcie_ctx.dma_target,
                                                 register_mmio,
                                                 driver_source: &self.inner.driver_source,
-                                                doorbell_registration: self.inner.partition.clone().into_doorbell_registration(Vtl::Vtl0),
-                                                shared_mem_mapper: Some(&mapper),
+                                                // ACPI eject can only revoke intercepted MMIO.
+                                                doorbell_registration: if acpi_slot.is_none() {
+                                                    self.inner.partition.clone().into_doorbell_registration(Vtl::Vtl0)
+                                                } else {
+                                                    None
+                                                },
+                                                shared_mem_mapper: acpi_slot.is_none().then_some(&mapper),
                                             },
                                         )
                                         .await
                                         .map(|r| r.0)
                                         .map_err(|e| anyhow::anyhow!(e))
-                                },
-                            ).await?;
+                            };
+                            let name = format!("pcie-hotplug:{port_name}");
+                            let (unit, device, revoker) = if acpi_slot.is_some() {
+                                let (unit, device, revoker) = self.inner.chipset_devices.add_dyn_device_with_revocable_mmio(
+                                    &self.inner.driver_source, &self.state_units, name, resolve,
+                                ).await?;
+                                (unit, device, Some(revoker))
+                            } else {
+                                let (unit, device) = self.inner.chipset_devices.add_dyn_device(
+                                    &self.inner.driver_source, &self.state_units, name, resolve,
+                                ).await?;
+                                (unit, device, None)
+                            };
 
                             // Connect the signal_msi and irqfd (possibly
                             // ITS-wrapped and/or SMMU-wrapped).
@@ -4073,18 +4213,14 @@ impl LoadedVm {
 
                             self.inner.pcie_hotplug_devices.push((port_name.clone(), unit, device));
 
-                            // Start the device unit before firing the hotplug
-                            // MSI. The guest may begin probing config space
-                            // immediately after receiving the interrupt, so
-                            // the device must be ready first.
                             self.state_units.start_stopped_units().await;
 
-                            // Now attach the device and notify the guest.
-                            if let Err(e) = rc.lock().hotplug_add_device(
-                                &port_name,
-                                "hotplug-device",
-                                bus_device,
-                            ) {
+                            let result = if let Some((slot, revoker)) = acpi_slot.zip(revoker) {
+                                slot.device.lock().attach(bus_device, revoker)
+                            } else {
+                                rc.lock().hotplug_add_device(&port_name, "hotplug-device", bus_device)
+                            };
+                            if let Err(e) = result {
                                 // Clean up the device unit on failure
                                 let (_, unit, _) = self.inner.pcie_hotplug_devices.pop().unwrap();
                                 device_removal.start(driver, unit.remove());
@@ -4094,9 +4230,28 @@ impl LoadedVm {
                         })
                         .await
                     }
+                    VmRpc::EjectPcieDevice(rpc) => {
+                        let ((port, timeout), response) = rpc.split();
+                        let result = (|| {
+                            anyhow::ensure!(self.running, "VM must be running for ACPI PCIe eject");
+                            self.inner.acpi_pcie_hotplug.as_ref()
+                                .filter(|slot| slot.port == port)
+                                .context("port is not managed by ACPI PCIe hotplug")
+                        })();
+                        match result {
+                            Ok(slot) => slot.device.lock().request_eject(
+                                self.inner.driver_source.simple(), timeout, response,
+                            ),
+                            Err(error) => response.complete(Err(RemoteError::new(error))),
+                        }
+                    }
                     VmRpc::RemovePcieDevice(rpc) => {
                         let (port_name, response) = rpc.split();
                         let device = (|| {
+                            anyhow::ensure!(
+                                !self.inner.acpi_pcie_hotplug.as_ref().is_some_and(|slot| slot.port == port_name),
+                                "use orderly eject for the ACPI PCIe port"
+                            );
                             // Only allow removing dynamically hot-added devices.
                             // Statically-attached devices don't have a tracked unit
                             // and removing them would leave their state unit/MMIO
@@ -4360,10 +4515,25 @@ impl LoadedVm {
         }
     }
 
+    fn ensure_acpi_pcie_slot_idle_for_save(&self) -> anyhow::Result<()> {
+        if let Some(hotplug) = &self.inner.acpi_pcie_hotplug {
+            anyhow::ensure!(
+                !self
+                    .inner
+                    .pcie_hotplug_devices
+                    .iter()
+                    .any(|(port, _, _)| port == &hotplug.port),
+                "cannot save while the ACPI PCIe slot is occupied or awaiting eject cleanup"
+            );
+        }
+        Ok(())
+    }
+
     /// Saves the VM's processor, partition, and device state.
     ///
     /// TODO: virtio & vmbus unsupported.
     async fn save(&mut self) -> anyhow::Result<SavedState> {
+        self.ensure_acpi_pcie_slot_idle_for_save()?;
         Ok(SavedState {
             units: self.state_units.save().await?,
         })
@@ -4400,11 +4570,12 @@ impl LoadedVm {
 
         let manifest = Manifest {
             load_mode: self.inner.load_mode,
-            floppy_disks: vec![],            // TODO
-            ide_disks: vec![],               // TODO
-            pcie_root_complexes: vec![],     // TODO
-            pcie_ecam_below_4gb: false,      // TODO
-            pcie_devices: vec![],            // TODO
+            floppy_disks: vec![],        // TODO
+            ide_disks: vec![],           // TODO
+            pcie_root_complexes: vec![], // TODO
+            pcie_ecam_below_4gb: false,  // TODO
+            pcie_devices: vec![],        // TODO
+            pcie_acpi_hotplug_port: None,
             pcie_switches: vec![],           // TODO
             pcie_generic_initiators: vec![], // TODO
             vpci_devices: vec![],            // TODO

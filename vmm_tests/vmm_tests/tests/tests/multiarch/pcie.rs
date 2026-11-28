@@ -14,6 +14,7 @@ use petri_artifacts_vmm_test::artifacts::virtio_win::VIRTIO_WINDOWS_DRIVERS;
 use pipette_client::PipetteClient;
 use std::fmt;
 use std::time::Duration;
+use vm_resource::IntoResource;
 use vmm_test_macros::openvmm_test;
 use vmm_test_macros::vmm_test_with;
 
@@ -413,6 +414,110 @@ async fn pcie_hotplug(
         timer.sleep(Duration::from_millis(500)).await;
     }
     assert!(removed, "expected endpoint to disappear after hot-remove");
+
+    agent.power_off().await?;
+    vm.wait_for_clean_teardown().await?;
+    Ok(())
+}
+
+#[vmm_test_with(openvmm, configs(linux_direct_x64))]
+async fn pcie_acpi_eject(
+    config: PetriVmBuilder<OpenVmmPetriBackend>,
+    _: (),
+    driver: DefaultDriver,
+) -> anyhow::Result<()> {
+    use disk_backend_resources::LayeredDiskHandle;
+    use disk_backend_resources::layer::RamDiskLayerHandle;
+    use virtio_resources::VirtioPciDeviceHandle;
+    use virtio_resources::blk::VirtioBlkHandle;
+
+    const PORT: &str = "s0rc0rp0";
+    let os_flavor = config.os_flavor();
+    let (mut vm, agent) = config
+        .modify_backend(|b| {
+            b.with_pcie_root_topology(1, 1, 1)
+                .with_pcie_acpi_hotplug_port(PORT)
+        })
+        .run()
+        .await?;
+    let sh = agent.unix_shell();
+    let kernel_config = cmd!(sh, "zcat /proc/config.gz")
+        .read()
+        .await
+        .context("reading guest kernel config")?;
+    if !kernel_config
+        .lines()
+        .any(|line| line == "CONFIG_HOTPLUG_PCI_ACPI=y")
+    {
+        tracing::warn!("skipping ACPI PCI eject: guest kernel lacks CONFIG_HOTPLUG_PCI_ACPI=y");
+        agent.power_off().await?;
+        vm.wait_for_clean_teardown().await?;
+        return Ok(());
+    }
+
+    let initial = parse_guest_pci_devices(os_flavor, &agent).await?;
+    assert_eq!(initial.len(), 1);
+    assert_eq!(initial[0].class_code, 0x060400);
+
+    let mut timer = PolledTimer::new(&driver);
+    for marker in ["acpi_eject_first", "acpi_eject_second"] {
+        let disk = LayeredDiskHandle::single_layer(RamDiskLayerHandle {
+            len: Some(8 * 1024 * 1024),
+            sector_size: None,
+        })
+        .into_resource();
+        let endpoint = VirtioPciDeviceHandle(
+            VirtioBlkHandle {
+                disk,
+                read_only: false,
+                serial: None,
+                options: Default::default(),
+            }
+            .into_resource(),
+        )
+        .into_resource();
+        vm.add_pcie_device(PORT.into(), endpoint).await?;
+
+        for _ in 0..60 {
+            if cmd!(sh, "test -b /dev/vda").run().await.is_ok() {
+                break;
+            }
+            timer.sleep(Duration::from_millis(250)).await;
+        }
+        cmd!(sh, "test -b /dev/vda")
+            .run()
+            .await
+            .context("virtio-blk did not appear after ACPI Bus Check")?;
+        let attached = parse_guest_pci_devices(os_flavor, &agent).await?;
+        assert_eq!(attached.len(), 2);
+        assert!(attached.iter().any(|d| d.vendor_id == 0x1af4));
+        cmd!(
+            sh,
+            "sh -c 'printf \"%s\" \"$1\" | dd of=/dev/vda bs=512 count=1 oflag=direct conv=sync,fsync' sh {marker}"
+        )
+        .run()
+        .await?;
+        let len = marker.len().to_string();
+        let read = cmd!(
+            sh,
+            "sh -c 'dd if=/dev/vda bs=512 count=1 iflag=direct | head -c \"$1\"' sh {len}"
+        )
+        .read()
+        .await?;
+        assert_eq!(read, marker);
+
+        let error = vm.remove_pcie_device(PORT.into()).await.unwrap_err();
+        assert!(format!("{error:#}").contains("use orderly eject"));
+        cmd!(sh, "test -b /dev/vda").run().await?;
+
+        vm.backend()
+            .eject_pcie_device(PORT.into(), Duration::from_secs(15))
+            .await?;
+        cmd!(sh, "test ! -e /dev/vda").run().await?;
+        let remaining = parse_guest_pci_devices(os_flavor, &agent).await?;
+        assert_eq!(remaining.len(), 1);
+        assert_eq!(remaining[0].class_code, 0x060400);
+    }
 
     agent.power_off().await?;
     vm.wait_for_clean_teardown().await?;

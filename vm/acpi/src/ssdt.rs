@@ -69,6 +69,24 @@ pub struct PcieHostBridgeEntry {
     pub preserve_boot_config: bool,
 }
 
+/// Resolved ACPI hotplug slot behind a PCIe root port.
+#[derive(Clone, Copy, Debug)]
+pub struct PcieHotplugSlot {
+    pub bridge_index: u32,
+    pub port_devfn: u8,
+    pub gsi: u32,
+    pub mmio_base: u32,
+}
+
+impl PcieHotplugSlot {
+    /// Length of the GED register region in bytes.
+    pub const REGISTER_LEN: u32 = 12;
+    /// Event flag for a change in bus contents.
+    pub const BUS_CHECK: u32 = 1;
+    /// Event flag for an eject request.
+    pub const EJECT_REQUEST: u32 = 2;
+}
+
 impl Ssdt {
     pub fn new() -> Self {
         Self {
@@ -134,6 +152,93 @@ impl Ssdt {
         self.add_object(&crate::power_button::device(gsi, mmio_base));
     }
 
+    fn add_pcie_hotplug_ged(&mut self, bridge_name: &[u8], slot: PcieHotplugSlot) -> Device {
+        let mut port_path = b"\\".to_vec();
+        port_path.extend_from_slice(bridge_name);
+        port_path.extend_from_slice(b".RP00");
+        let mut slot_path = port_path.clone();
+        slot_path.extend_from_slice(b".SL00");
+
+        let mut ged = crate::power_button::generic_event_device(
+            b"\\_SB.PHPE",
+            1,
+            slot.gsi,
+            slot.mmio_base,
+            PcieHotplugSlot::REGISTER_LEN,
+        );
+        add_mmio_dword_fields(
+            &mut ged,
+            b"HREG",
+            slot.mmio_base,
+            &[*b"EVTS", *b"STAT", *b"EJCT"],
+        );
+        let mut evt = Method::new(b"_EVT");
+        evt.set_arg_count(1);
+        evt.is_serialized = true;
+        evt.add_operation(&StoreOp {
+            source: b"EVTS".to_vec(),
+            destination: vec![0x60], // Local0
+        });
+        evt.add_operation(&StoreOp {
+            source: vec![0x60],
+            destination: b"EVTS".to_vec(),
+        });
+        for (flag, path, notify) in [
+            (PcieHotplugSlot::BUS_CHECK, &port_path, 0),
+            (PcieHotplugSlot::EJECT_REQUEST, &slot_path, 3),
+        ] {
+            evt.add_operation(&IfOp {
+                predicate: AndOp {
+                    operand1: vec![0x60],
+                    operand2: encode_integer(flag.into()),
+                    target_name: encode_integer(0),
+                }
+                .to_bytes(),
+                body: NotifyOp {
+                    object: encode_name(path),
+                    value: encode_integer(notify),
+                }
+                .to_bytes(),
+            });
+        }
+        ged.add_object(&evt);
+        self.add_object(&ged);
+
+        let mut endpoint = Device::new(b"SL00");
+        endpoint.add_object(&NamedInteger::new(b"_ADR", 0));
+        endpoint.add_object(&NamedInteger::new(b"_SUN", 1));
+        let mut status = Method::new(b"_STA");
+        status.add_operation(&ReturnOp {
+            result: encode_name(b"\\_SB.PHPE.STAT"),
+        });
+        endpoint.add_object(&status);
+        let mut eject = Method::new(b"_EJ0");
+        eject.set_arg_count(1);
+        eject.is_serialized = true;
+        eject.add_operation(&IfOp {
+            predicate: LEqualOp {
+                left: encode_arg(0),
+                right: encode_integer(1),
+            }
+            .to_bytes(),
+            body: StoreOp {
+                source: encode_integer(1),
+                destination: encode_name(b"\\_SB.PHPE.EJCT"),
+            }
+            .to_bytes(),
+        });
+        endpoint.add_object(&eject);
+
+        let mut port = Device::new(b"RP00");
+        let devfn = u64::from(slot.port_devfn);
+        port.add_object(&NamedInteger::new(
+            b"_ADR",
+            ((devfn >> 3) << 16) | (devfn & 7),
+        ));
+        port.add_object(&endpoint);
+        port
+    }
+
     /// Adds a PCI Express root complex with the specified bus number and MMIO ranges.
     ///
     /// ```text
@@ -154,6 +259,15 @@ impl Ssdt {
     /// }
     /// ```
     pub fn add_pcie(&mut self, entry: PcieHostBridgeEntry) {
+        self.add_pcie_with_hotplug_slot(entry, None);
+    }
+
+    /// Add a root complex and optionally describe one ACPI hotplug slot.
+    pub fn add_pcie_with_hotplug_slot(
+        &mut self,
+        entry: PcieHostBridgeEntry,
+        slot: Option<PcieHotplugSlot>,
+    ) {
         let PcieHostBridgeEntry {
             index,
             segment,
@@ -166,7 +280,11 @@ impl Ssdt {
             vnode,
             preserve_boot_config,
         } = entry;
-        let mut pcie = Device::new(encode_pcie_name(index).as_slice());
+        let bridge_name = encode_pcie_name(index);
+        let mut pcie = Device::new(&bridge_name);
+        if let Some(slot) = slot {
+            pcie.add_object(&self.add_pcie_hotplug_ged(&bridge_name, slot));
+        }
         if cxl {
             // As recommended by the CXL specification, describe CXL host bridges with _HID "ACPI0016"
             // and both PNP0A03 and PNP0A08 in _CID to maximize compatibility with different OSes.
@@ -310,9 +428,40 @@ impl Ssdt {
             source: encode_integer(0),
             destination: b"STS0".to_vec(),
         };
+        let mut grant_control = store_zero.to_bytes();
+        if slot.is_some() {
+            // Mask native hotplug ownership (PCI Firmware Specification 4.5.1).
+            CreateDWordFieldOp {
+                source_buffer: encode_arg(3),
+                byte_index: encode_integer(8),
+                field_name: *b"CTRL",
+            }
+            .append_to_vec(&mut grant_control);
+            let mask = AndOp {
+                operand1: b"CTRL".to_vec(),
+                operand2: encode_integer(u64::from(!1u32)),
+                target_name: b"CTRL".to_vec(),
+            };
+            let mut masked = mask.to_bytes();
+            StoreOp {
+                source: encode_integer(0x10),
+                destination: b"STS0".to_vec(),
+            }
+            .append_to_vec(&mut masked);
+            IfOp {
+                predicate: AndOp {
+                    operand1: b"CTRL".to_vec(),
+                    operand2: encode_integer(1),
+                    target_name: encode_integer(0),
+                }
+                .to_bytes(),
+                body: masked,
+            }
+            .append_to_vec(&mut grant_control);
+        }
         let if_op = IfOp {
             predicate: lequal.to_bytes(),
-            body: store_zero.to_bytes(),
+            body: grant_control,
         };
         osc_method.add_operation(&if_op);
         osc_method.add_operation(&else_body);

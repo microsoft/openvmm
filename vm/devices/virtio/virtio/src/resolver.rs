@@ -11,8 +11,10 @@ use pci_resources::ResolvePciDeviceHandleParams;
 use pci_resources::ResolvedPciDevice;
 use thiserror::Error;
 use virtio_resources::VirtioPciDeviceHandle;
+use virtio_resources::pmem::VirtioPmemHandle;
 use vm_resource::AsyncResolveResource;
 use vm_resource::ResolveError;
+use vm_resource::ResourceId;
 use vm_resource::ResourceResolver;
 use vm_resource::declare_static_async_resolver;
 use vm_resource::kind::PciDeviceHandleKind;
@@ -27,6 +29,8 @@ pub struct VirtioPciResolver;
 
 #[derive(Debug, Error)]
 pub enum ResolveVirtioPciError {
+    #[error("virtio-pmem requires a PCI shared memory mapper")]
+    PmemRequiresMapper,
     #[error("failed to resolve virtio device")]
     Virtio(#[source] ResolveError),
     #[error("failed to create PCI device")]
@@ -44,6 +48,9 @@ impl AsyncResolveResource<PciDeviceHandleKind, VirtioPciDeviceHandle> for Virtio
         resource: VirtioPciDeviceHandle,
         input: ResolvePciDeviceHandleParams<'_>,
     ) -> Result<Self::Output, Self::Error> {
+        if input.shared_mem_mapper.is_none() && resource.0.id() == VirtioPmemHandle::ID {
+            return Err(ResolveVirtioPciError::PmemRequiresMapper);
+        }
         let inner = resolver
             .resolve(
                 resource.0,
