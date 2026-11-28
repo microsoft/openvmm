@@ -116,6 +116,7 @@ async fn basic_servicing<T: PetriVmmBackend>(
     openhcl_servicing_core(config, igvm_file, flags, DEFAULT_SERVICING_COUNT).await
 }
 
+#[cfg(windows)]
 #[vmm_test(
     hyperv_openhcl_pcat_x64(vhd(ubuntu_2504_server_x64))[LATEST_STANDARD_X64],
 )]
@@ -130,6 +131,7 @@ async fn basic_servicing_vmbus_5_3<T: PetriVmmBackend>(
     .await
 }
 
+#[cfg(windows)]
 #[vmm_test(
     hyperv_openhcl_pcat_x64(vhd(ubuntu_2504_server_x64))[LATEST_STANDARD_X64],
 )]
@@ -418,6 +420,7 @@ async fn servicing_downgrade<T: PetriVmmBackend>(
     .await
 }
 
+#[cfg(windows)]
 #[vmm_test(
     hyperv_openhcl_pcat_x64(vhd(ubuntu_2504_server_x64))[LATEST_STANDARD_X64, LATEST_RELEASE_STANDARD_X64],
 )]
@@ -435,6 +438,7 @@ async fn servicing_downgrade_vmbus_5_3<T: PetriVmmBackend>(
     .await
 }
 
+#[cfg(windows)]
 #[vmm_test(
     hyperv_openhcl_pcat_x64(vhd(ubuntu_2504_server_x64))[LATEST_STANDARD_X64, LATEST_RELEASE_STANDARD_X64],
 )]
