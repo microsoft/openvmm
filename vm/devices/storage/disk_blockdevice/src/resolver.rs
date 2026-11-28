@@ -23,6 +23,7 @@ pub struct BlockDeviceResolver {
     uevent_listener: Option<Arc<UeventListener>>,
     bounce_buffer_tracker: Arc<BounceBufferTracker>,
     always_bounce: bool,
+    read_verification: bool,
 }
 
 impl BlockDeviceResolver {
@@ -35,7 +36,13 @@ impl BlockDeviceResolver {
             uevent_listener,
             bounce_buffer_tracker,
             always_bounce,
+            read_verification: false,
         }
+    }
+
+    pub fn with_read_verification(mut self, enabled: bool) -> Self {
+        self.read_verification = enabled;
+        self
     }
 }
 
@@ -65,6 +72,7 @@ impl AsyncResolveResource<DiskHandleKind, BlockDeviceDiskHandle> for BlockDevice
             self.uevent_listener.as_deref(),
             Some(self.bounce_buffer_tracker.clone()),
             self.always_bounce,
+            self.read_verification,
         )
         .await
         .map_err(ResolveDiskError::NewDevice)?;
@@ -99,6 +107,7 @@ impl AsyncResolveResource<DiskHandleKind, BlockDeviceDiskHandle> for StaticBlock
             input.driver_source.current(),
             None,
             None,
+            false,
             false,
         )
         .await

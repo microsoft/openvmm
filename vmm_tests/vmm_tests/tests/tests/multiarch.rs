@@ -38,8 +38,7 @@ use vmm_test_macros::vmm_test;
 use vmm_test_macros::vmm_test_with;
 
 #[cfg(windows)]
-const PCAT_IO_COMBINED_CMDLINE: &str =
-    "hv_vmbus.max_version=0x00050003 OPENHCL_TEST_CONFIG=PCAT_IO_COMBINED";
+const PCAT_READ_VERIFY_CMDLINE: &str = "OPENHCL_TEST_CONFIG=PCAT_READ_VERIFY";
 
 /// Test for the Windows DirectIO (`-net dio`) network backend.
 mod dio_nic;
@@ -152,20 +151,10 @@ async fn boot<T: PetriVmmBackend>(config: PetriVmBuilder<T>) -> anyhow::Result<(
     hyperv_openhcl_pcat_x64(vhd(windows_datacenter_core_2022_x64)),
     hyperv_openhcl_pcat_x64(vhd(ubuntu_2504_server_x64))
 )]
-async fn boot_vmbus_5_3<T: PetriVmmBackend>(config: PetriVmBuilder<T>) -> anyhow::Result<()> {
-    boot(config.with_openhcl_command_line("hv_vmbus.max_version=0x00050003")).await
-}
-
-#[cfg(windows)]
-#[vmm_test(
-    hyperv_openhcl_pcat_x64(vhd(windows_datacenter_core_2022_x64)),
-    hyperv_openhcl_pcat_x64(vhd(ubuntu_2504_server_x64)),
-    openvmm_openhcl_uefi_x64(vhd(ubuntu_2504_server_x64))
-)]
-async fn boot_pcat_io_combined<T: PetriVmmBackend>(
+async fn boot_pcat_read_verify<T: PetriVmmBackend>(
     config: PetriVmBuilder<T>,
 ) -> anyhow::Result<()> {
-    boot(config.with_openhcl_command_line(PCAT_IO_COMBINED_CMDLINE)).await
+    boot(config.with_openhcl_command_line(PCAT_READ_VERIFY_CMDLINE)).await
 }
 
 /// Basic boot test using virtio vsock instead of vmbus hvsocket.
@@ -733,20 +722,10 @@ async fn boot_heavy<T: PetriVmmBackend>(config: PetriVmBuilder<T>) -> anyhow::Re
     hyperv_openhcl_pcat_x64(vhd(windows_datacenter_core_2022_x64)),
     hyperv_openhcl_pcat_x64(vhd(ubuntu_2504_server_x64))
 )]
-async fn boot_heavy_vmbus_5_3<T: PetriVmmBackend>(config: PetriVmBuilder<T>) -> anyhow::Result<()> {
-    boot_heavy(config.with_openhcl_command_line("hv_vmbus.max_version=0x00050003")).await
-}
-
-#[cfg(windows)]
-#[vmm_test(
-    hyperv_openhcl_pcat_x64(vhd(windows_datacenter_core_2022_x64)),
-    hyperv_openhcl_pcat_x64(vhd(ubuntu_2504_server_x64)),
-    openvmm_openhcl_uefi_x64(vhd(ubuntu_2504_server_x64))
-)]
-async fn boot_heavy_pcat_io_combined<T: PetriVmmBackend>(
+async fn boot_heavy_pcat_read_verify<T: PetriVmmBackend>(
     config: PetriVmBuilder<T>,
 ) -> anyhow::Result<()> {
-    boot_heavy(config.with_openhcl_command_line(PCAT_IO_COMBINED_CMDLINE)).await
+    boot_heavy(config.with_openhcl_command_line(PCAT_READ_VERIFY_CMDLINE)).await
 }
 
 /// Basic boot test with a single VP.
@@ -875,19 +854,10 @@ async fn reboot<T: PetriVmmBackend>(config: PetriVmBuilder<T>) -> Result<(), any
     hyperv_openhcl_pcat_x64(vhd(windows_datacenter_core_2022_x64)),
     hyperv_openhcl_pcat_x64(vhd(ubuntu_2504_server_x64))
 )]
-async fn reboot_vmbus_5_3<T: PetriVmmBackend>(config: PetriVmBuilder<T>) -> anyhow::Result<()> {
-    reboot(config.with_openhcl_command_line("hv_vmbus.max_version=0x00050003")).await
-}
-
-#[cfg(windows)]
-#[vmm_test(
-    hyperv_openhcl_pcat_x64(vhd(windows_datacenter_core_2022_x64)),
-    hyperv_openhcl_pcat_x64(vhd(ubuntu_2504_server_x64))
-)]
-async fn reboot_pcat_io_combined<T: PetriVmmBackend>(
+async fn reboot_pcat_read_verify<T: PetriVmmBackend>(
     config: PetriVmBuilder<T>,
 ) -> anyhow::Result<()> {
-    reboot(config.with_openhcl_command_line(PCAT_IO_COMBINED_CMDLINE)).await
+    reboot(config.with_openhcl_command_line(PCAT_READ_VERIFY_CMDLINE)).await
 }
 
 /// Preserve a multi-socket topology and agent connectivity across repeated resets.

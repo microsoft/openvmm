@@ -23,6 +23,7 @@ anyhow.workspace = true
 async-trait.workspace = true
 event-listener.workspace = true
 fs-err.workspace = true
+futures.workspace = true
 thiserror.workspace = true
 tracing.workspace = true
 zerocopy.workspace = true
@@ -35,7 +36,6 @@ nix = { workspace = true, features = ["ioctl"] }
 uevent.workspace = true
 
 [target.'cfg(target_os = "linux")'.dev-dependencies]
-futures.workspace = true
 hvdef.workspace = true
 once_cell.workspace = true
 pal_uring.workspace = true

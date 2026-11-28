@@ -17,36 +17,6 @@ use std::ptr::null_mut;
 use std::sync::atomic::AtomicUsize;
 use std::sync::atomic::Ordering;
 
-/// Disables transparent huge pages for the current process and verifies the setting.
-#[cfg(target_os = "linux")]
-pub fn disable_process_thp() -> Result<(), Error> {
-    // SAFETY: these prctl operations take integer arguments and access no user pointers.
-    unsafe {
-        libc::prctl(
-            libc::PR_SET_THP_DISABLE,
-            1 as libc::c_ulong,
-            0 as libc::c_ulong,
-            0 as libc::c_ulong,
-            0 as libc::c_ulong,
-        )
-        .syscall_result()?;
-        let disabled = libc::prctl(
-            libc::PR_GET_THP_DISABLE,
-            0 as libc::c_ulong,
-            0 as libc::c_ulong,
-            0 as libc::c_ulong,
-            0 as libc::c_ulong,
-        )
-        .syscall_result()?;
-        if disabled != 1 {
-            return Err(Error::other(format!(
-                "PR_GET_THP_DISABLE returned {disabled}, expected 1"
-            )));
-        }
-    }
-    Ok(())
-}
-
 pub(crate) fn page_size() -> usize {
     static PAGE_SIZE: AtomicUsize = AtomicUsize::new(0);
     let s = PAGE_SIZE.load(Ordering::Relaxed);

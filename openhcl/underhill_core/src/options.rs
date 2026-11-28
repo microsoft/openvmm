@@ -25,8 +25,8 @@ pub enum TestScenarioConfig {
     /// Exercises a mocked TDISP flow for emulated TDISP devices produced by OpenVMM tests.
     VpciTdispFlow,
 
-    /// Diagnoses PCAT storage failures with bounce buffers and process THP disabled.
-    PcatIoCombined,
+    /// Verifies block reads and IDE DMA readback while diagnosing PCAT boot failures.
+    PcatReadVerify,
 }
 
 impl FromStr for TestScenarioConfig {
@@ -38,7 +38,7 @@ impl FromStr for TestScenarioConfig {
             "SERVICING_RESTORE_STUCK" => Ok(TestScenarioConfig::RestoreStuck),
             "SERVICING_SAVE_STUCK" => Ok(TestScenarioConfig::SaveStuck),
             "TDISP_VPCI_FLOW_TEST" => Ok(TestScenarioConfig::VpciTdispFlow),
-            "PCAT_IO_COMBINED" => Ok(TestScenarioConfig::PcatIoCombined),
+            "PCAT_READ_VERIFY" => Ok(TestScenarioConfig::PcatReadVerify),
             _ => Err(anyhow::anyhow!("Invalid test config: {}", s)),
         }
     }

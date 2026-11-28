@@ -1087,12 +1087,17 @@ enum ChannelType {
 #[inspect(tag = "drive_type")]
 pub enum DriveMedia {
     HardDrive(#[inspect(rename = "backend")] Disk),
+    HardDriveVerified(#[inspect(rename = "backend")] Disk),
     OpticalDrive(#[inspect(rename = "backend")] Arc<dyn AsyncScsiDisk>),
 }
 
 impl DriveMedia {
     pub fn hard_disk(disk: Disk) -> Self {
         DriveMedia::HardDrive(disk)
+    }
+
+    pub fn hard_disk_verified(disk: Disk) -> Self {
+        DriveMedia::HardDriveVerified(disk)
     }
 
     pub fn optical_disk(scsi_disk: Arc<dyn AsyncScsiDisk>) -> Self {
@@ -1962,6 +1967,14 @@ mod tests {
         guest_memory: Option<GuestMemory>,
         drive_type: DriveType,
     ) -> (IdeDevice, File, Vec<u32>, MediaGeometry) {
+        ide_test_setup_with_verification(guest_memory, drive_type, false)
+    }
+
+    fn ide_test_setup_with_verification(
+        guest_memory: Option<GuestMemory>,
+        drive_type: DriveType,
+        verify_dma: bool,
+    ) -> (IdeDevice, File, Vec<u32>, MediaGeometry) {
         let test_guest_mem = match guest_memory {
             Some(test_gm) => test_gm,
             None => GuestMemory::allocate(16 * 1024),
@@ -1978,6 +1991,7 @@ mod tests {
         let geometry = MediaGeometry::new(disk.sector_count(), disk.sector_size()).unwrap();
 
         let media = match drive_type {
+            DriveType::Hard if verify_dma => DriveMedia::hard_disk_verified(disk),
             DriveType::Hard => DriveMedia::hard_disk(disk),
             DriveType::Optical => DriveMedia::optical_disk(Arc::new(AtapiScsiDisk::new(Arc::new(
                 SimpleScsiDvd::new(Some(disk)),
@@ -2332,7 +2346,7 @@ mod tests {
     }
 
     // Command: READ SECTOR(S) - enlightened
-    async fn enlightened_cmd_test(drive_type: DriveType) {
+    async fn enlightened_cmd_test(drive_type: DriveType, verify_dma: bool) {
         const SECTOR_COUNT: u16 = 4;
         const BYTE_COUNT: u16 = SECTOR_COUNT * protocol::HARD_DRIVE_SECTOR_BYTES as u16;
 
@@ -2374,7 +2388,7 @@ mod tests {
 
         let dev_path = IdePath::default();
         let (mut ide_device, _disk, file_contents, _geometry) =
-            ide_test_setup(Some(test_guest_mem.clone()), drive_type);
+            ide_test_setup_with_verification(Some(test_guest_mem.clone()), drive_type, verify_dma);
 
         // select device [0,0] = primary channel, primary drive
         device_select(&mut ide_device, &dev_path).await;
@@ -2405,12 +2419,17 @@ mod tests {
     // Command: READ SECTOR(S) - enlightened
     #[async_test]
     async fn enlightened_cd_cmd_test() {
-        enlightened_cmd_test(DriveType::Optical).await
+        enlightened_cmd_test(DriveType::Optical, false).await
     }
 
     #[async_test]
     async fn enlightened_hdd_cmd_test() {
-        enlightened_cmd_test(DriveType::Hard).await
+        enlightened_cmd_test(DriveType::Hard, false).await
+    }
+
+    #[async_test]
+    async fn enlightened_hdd_dma_readback_verification() {
+        enlightened_cmd_test(DriveType::Hard, true).await
     }
 
     // Command: READ SECTOR(S) - enlightened

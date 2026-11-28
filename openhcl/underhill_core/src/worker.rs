@@ -2086,18 +2086,16 @@ async fn new_underhill_vm(
     let proto_partition = UhProtoPartition::new(&params, |cpu| tp.driver(cpu).clone())
         .context("failed to create prototype partition")?;
 
-    let pcat_io_combined = matches!(
+    let pcat_read_verify = matches!(
         env_cfg.test_configuration,
-        Some(TestScenarioConfig::PcatIoCombined)
+        Some(TestScenarioConfig::PcatReadVerify)
     );
-    if pcat_io_combined {
+    if pcat_read_verify {
         anyhow::ensure!(
             !isolation.is_isolated(),
-            "PCAT_IO_COMBINED is only supported for non-isolated VMs"
+            "PCAT_READ_VERIFY is only supported for non-isolated VMs"
         );
-        sparse_mmap::unix::disable_process_thp()
-            .context("PCAT_IO_COMBINED failed to disable process THP")?;
-        tracing::info!("PCAT_IO_COMBINED: verified process THP disabled before VTL0 mappings");
+        tracing::info!("PCAT_READ_VERIFY: enabling independent block reads and IDE DMA readback");
     }
 
     let gm = underhill_mem::init(&underhill_mem::Init {
@@ -2609,17 +2607,14 @@ async fn new_underhill_vm(
     //
     // Currently we always bounce for CVM as well, due to underhill_mem not
     // supporting registering shared or private memory with the kernel.
-    let always_bounce =
-        cfg!(guest_arch = "aarch64") || isolation.is_hardware_isolated() || pcat_io_combined;
-    if pcat_io_combined {
-        tracing::info!("PCAT_IO_COMBINED: forcing block-device bounce buffers");
-    }
+    let always_bounce = cfg!(guest_arch = "aarch64") || isolation.is_hardware_isolated();
     resolver.add_async_resolver::<DiskHandleKind, _, BlockDeviceDiskHandle, _>(
         BlockDeviceResolver::new(
             Some(uevent_listener.clone()),
             bounce_buffer_tracker,
             always_bounce,
-        ),
+        )
+        .with_read_verification(pcat_read_verify),
     );
 
     let periodic_telemetry_task = tp.spawn(
@@ -3095,7 +3090,11 @@ async fn new_underhill_vm(
                         // Only disks, not DVD drives, get IDE accelerator channels.
                         storvsp_ide_disks.push((path, storvsp::ScsiControllerDisk::new(scsi_disk)));
 
-                        ide::DriveMedia::hard_disk(disk)
+                        if pcat_read_verify {
+                            ide::DriveMedia::hard_disk_verified(disk)
+                        } else {
+                            ide::DriveMedia::hard_disk(disk)
+                        }
                     }
                 };
 

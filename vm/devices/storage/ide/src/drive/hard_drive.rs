@@ -246,6 +246,9 @@ pub(crate) struct HardDrive {
     disk_path: IdePath,
     read_only: bool,
 
+    verify_dma: bool,
+    verified_dma_reads: u64,
+
     #[inspect(skip)]
     command_buffer: CommandBuffer,
 
@@ -483,7 +486,7 @@ enum IoPortData<'a> {
 }
 
 impl HardDrive {
-    pub fn new(disk: Disk, disk_path: IdePath) -> Result<Self, NewDeviceError> {
+    pub fn new(disk: Disk, disk_path: IdePath, verify_dma: bool) -> Result<Self, NewDeviceError> {
         // Initialize drive geometry
         let read_only = disk.is_read_only();
         let geometry = MediaGeometry::new(disk.sector_count(), disk.sector_size())?;
@@ -493,6 +496,8 @@ impl HardDrive {
             geometry,
             disk_path,
             read_only,
+            verify_dma,
+            verified_dma_reads: 0,
             command_buffer: CommandBuffer::new(),
             io: None,
             waker: None,
@@ -502,6 +507,7 @@ impl HardDrive {
     pub fn reset(&mut self) {
         self.state = DriveState::new();
         self.io = None;
+        self.verified_dma_reads = 0;
     }
 
     pub fn pio_read(&mut self, data: &mut [u8]) {
@@ -665,6 +671,29 @@ impl HardDrive {
         // buffer so the caller can raise the bus master DMA error, just as real
         // hardware would on a failed bus access.
         match buffer.dma_type.as_ref().unwrap() {
+            DmaType::Write if self.verify_dma => {
+                let mut expected = vec![0; len];
+                buffer_ptr.atomic_read(&mut expected);
+                guest_memory.write_from_atomic(gpa, buffer_ptr)?;
+                let mut actual = vec![0; len];
+                guest_memory.read_at(gpa, &mut actual)?;
+                if let Some(first_byte) = expected.iter().zip(&actual).position(|(a, b)| a != b) {
+                    tracing::error!(
+                        gpa,
+                        len,
+                        first_byte,
+                        "PCAT_DMA_VERIFY: guest readback differs from IDE source buffer"
+                    );
+                    panic!(
+                        "PCAT_DMA_VERIFY mismatch: gpa={gpa:#x} len={len} first_byte={first_byte}"
+                    );
+                }
+                if self.verified_dma_reads < 128 {
+                    tracing::info!(gpa, len, "PCAT_DMA_VERIFY: verified guest readback");
+                }
+                self.verified_dma_reads += 1;
+                Ok(())
+            }
             DmaType::Write => guest_memory.write_from_atomic(gpa, buffer_ptr),
             DmaType::Read => guest_memory.read_to_atomic(gpa, buffer_ptr),
         }?;
