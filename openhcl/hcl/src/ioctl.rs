@@ -804,13 +804,14 @@ impl MshvHvcall {
         }
     }
 
-    /// Accepts VTL 0 pages with no host visibility.
+    /// Accepts VTL 0 pages with the given host visibility.
     ///
     /// [`HypercallCode::HvCallAcceptGpaPages`] must be allowed.
     pub fn accept_gpa_pages(
         &self,
         range: MemoryRange,
         memory_type: hvdef::hypercall::AcceptMemoryType,
+        host_visibility: HostVisibilityType,
     ) -> Result<(), AcceptPagesError> {
         const MAX_INPUT_ELEMENTS: usize = (HV_PAGE_SIZE as usize
             - size_of::<hvdef::hypercall::AcceptGpaPages>())
@@ -827,7 +828,7 @@ impl MshvHvcall {
                 partition_id: HV_PARTITION_ID_SELF,
                 page_attributes: hvdef::hypercall::AcceptPagesAttributes::new()
                     .with_memory_type(memory_type.0)
-                    .with_host_visibility(HostVisibilityType::PRIVATE)
+                    .with_host_visibility(host_visibility)
                     .with_vtl_set(0), // vtl protections cannot be applied for VTL 0 memory
                 vtl_permission_set: hvdef::hypercall::VtlPermissionSet {
                     vtl_permission_from_1: [0; hvdef::hypercall::HV_VTL_PERMISSION_SET_SIZE],
@@ -1424,6 +1425,36 @@ impl MshvHvcall {
             Ok(output.report)
         } else {
             Err(status.result().unwrap_err())
+        }
+    }
+
+    /// Asks the vTSM (virtual TSM) to authorize, or with `authorize` false to
+    /// unauthorize, DMA for the device the host assigned with
+    /// `logical_device_id`, on a VBS-isolated partition. The hypervisor denies
+    /// DMA from every device assigned to the partition until it's authorized.
+    ///
+    /// [`HypercallCode::HvCallVbsVmCallAuthorizeDeviceIo`] must be allowed.
+    pub fn authorize_device_io(
+        &self,
+        logical_device_id: u64,
+        authorize: bool,
+    ) -> Result<(), HvError> {
+        let input = hvdef::hypercall::VbsVmCallAuthorizeDeviceIo {
+            logical_device_id,
+            authorize: authorize.into(),
+            reserved: [0; 7],
+        };
+
+        // SAFETY: The input is the correct type for this hypercall, which has
+        //         no output.
+        unsafe {
+            self.hvcall(
+                HypercallCode::HvCallVbsVmCallAuthorizeDeviceIo,
+                &input,
+                &mut (),
+            )
+            .expect("submitting hypercall should not fail")
+            .result()
         }
     }
 }

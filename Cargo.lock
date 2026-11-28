@@ -5811,10 +5811,12 @@ version = "0.0.0"
 dependencies = [
  "anyhow",
  "futures",
+ "guid",
  "hcl",
  "hvdef",
  "inspect",
  "memory_range",
+ "pal_async",
  "parking_lot",
  "sev_guest_device",
  "tdisp",

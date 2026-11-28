@@ -257,9 +257,11 @@ impl MemoryAcceptor {
     pub fn accept_lower_vtl_pages(&self, range: MemoryRange) -> Result<(), AcceptPagesError> {
         match self.isolation {
             IsolationType::None => unreachable!(),
-            IsolationType::Vbs => self
-                .mshv_hvcall
-                .accept_gpa_pages(range, AcceptMemoryType::RAM),
+            IsolationType::Vbs => self.mshv_hvcall.accept_gpa_pages(
+                range,
+                AcceptMemoryType::RAM,
+                HostVisibilityType::PRIVATE,
+            ),
             IsolationType::Snp => {
                 self.mshv_vtl
                     .pvalidate_pages(range, true, false)

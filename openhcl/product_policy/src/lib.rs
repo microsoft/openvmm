@@ -138,6 +138,9 @@ pub struct VpciRelayPolicy {
     /// When OpenHCL runs the VPCI relay.
     #[mesh(2)]
     pub mode: VpciRelayMode,
+    /// Allow devices without TDISP attestation.
+    #[mesh(3)]
+    pub allow_unattested_devices: bool,
 }
 
 /// One product's table in the manifest: the product's fields plus an optional
@@ -261,6 +264,12 @@ macro_rules! define_product_policy {
                 self.vpci_relay_policy()
                     .map(|r| r.mode)
                     .unwrap_or_default()
+            }
+
+            /// Whether devices without TDISP attestation are allowed.
+            pub fn allow_unattested_devices(&self) -> bool {
+                self.vpci_relay_policy()
+                    .is_some_and(|r| r.allow_unattested_devices)
             }
         }
 

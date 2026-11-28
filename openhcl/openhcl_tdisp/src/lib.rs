@@ -14,6 +14,8 @@ pub mod noop;
 mod sevtio;
 #[cfg(target_os = "linux")]
 mod tdxconnect;
+#[cfg(target_os = "linux")]
+mod vbs;
 
 pub use client::TdispClient;
 pub use client::TdispCommandTransport;
@@ -49,10 +51,14 @@ pub use tdisp_proto::TdispTdiState;
 pub use sevtio::TdispSevTioResourceValidator;
 #[cfg(target_os = "linux")]
 pub use tdxconnect::TdispTdxConnectResourceValidator;
+#[cfg(target_os = "linux")]
+pub use vbs::TdispVbsResourceValidator;
 
 #[cfg(target_os = "linux")]
 use anyhow::Context;
+use guid::Guid;
 use hvdef::Vtl;
+use memory_range::MemoryRange;
 use std::future::Future;
 use std::pin::Pin;
 use std::sync::Arc;
@@ -163,6 +169,24 @@ pub trait TdispResourceValidationInterface: Send + Sync {
         range_id: u16,
     ) -> Pin<Box<dyn Future<Output = anyhow::Result<()>> + Send + Sync + 'a>>;
 
+    /// Make an MMIO range that stays shared with the host reachable from
+    /// `target_vtl`. Only needed on platforms where the lower VTL can't reach
+    /// device MMIO until it's accepted, so by default this does nothing.
+    ///
+    /// * `target_vtl` - The VTL to make the range reachable from.
+    /// * `base_gpa` - The base guest physical address of the MMIO range.
+    /// * `length_in_bytes` - The length in bytes of the MMIO range.
+    /// * `range_id` - The PCI BAR index of the range.
+    fn tdisp_accept_shared_mmio(
+        &self,
+        _target_vtl: Vtl,
+        _base_gpa: u64,
+        _length_in_bytes: u64,
+        _range_id: u16,
+    ) -> anyhow::Result<()> {
+        Ok(())
+    }
+
     /// Unblock DMA access for the device's IOMMU domain by asking the platform
     /// specific TSM to perform an unblock operation.
     ///
@@ -211,15 +235,24 @@ pub trait TdispResourceValidationInterface: Send + Sync {
 ///   to.
 /// * `vtom` - The address mask with the VTOM bit set, marking where VTOM
 ///   addresses start in the CVM. `None` on a partition without one.
+/// * `instance_id` - The instance ID of the VPCI bus the device is on. The VBS
+///   validator derives the hypervisor's logical device ID from it. That's
+///   temporary, to enable the VBS TDISP flows, which will eventually use the
+///   same guest device ID as the other platforms.
+/// * `vtl0_mmio` - Where the guest may place device BARs. The VBS validator
+///   only accepts BARs inside these ranges.
 /// * `is_test_environment` - `true` if running in a test environment.
 pub fn new_resource_validator(
     isolation: IsolationType,
     vtom: Option<u64>,
+    instance_id: Guid,
+    vtl0_mmio: &[MemoryRange],
     is_test_environment: bool,
 ) -> anyhow::Result<Arc<dyn TdispResourceValidationInterface>> {
     tracing::info!(
         ?isolation,
         ?vtom,
+        %instance_id,
         is_test_environment,
         "selecting a TDISP resource validator"
     );
@@ -243,6 +276,12 @@ pub fn new_resource_validator(
             let vtom = vtom.context("a TDX partition requires a VTOM to validate resources")?;
             Ok(Arc::new(TdispTdxConnectResourceValidator::new(vtom)?))
         }
+
+        #[cfg(target_os = "linux")]
+        IsolationType::Vbs => Ok(Arc::new(TdispVbsResourceValidator::new(
+            instance_id,
+            vtl0_mmio,
+        )?)),
 
         // Isolation types with no validator of their own, or running in an
         // environment outside of a OpenHCL Linux build

@@ -35,6 +35,19 @@ pub struct UnblockedMmioRange {
     pub range_id: u16,
 }
 
+/// A single shared MMIO acceptance recorded by the validator.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AcceptedSharedMmioRange {
+    /// The VTL the MMIO range was made reachable from.
+    pub target_vtl: Vtl,
+    /// The base guest physical address of the MMIO range.
+    pub base_gpa: u64,
+    /// The length in bytes of the MMIO range.
+    pub length_in_bytes: u64,
+    /// The PCI BAR index of the range.
+    pub range_id: u16,
+}
+
 /// A [`TdispResourceValidationInterface`] that validates nothing.
 ///
 /// A device driven through the TDISP flow always has a validator, so this
@@ -44,6 +57,7 @@ pub struct UnblockedMmioRange {
 #[derive(Default)]
 pub struct TdispNoopResourceValidator {
     unblocked_mmio_ranges: Mutex<Vec<UnblockedMmioRange>>,
+    accepted_shared_mmio_ranges: Mutex<Vec<AcceptedSharedMmioRange>>,
     dma_unblocked: Mutex<bool>,
 }
 
@@ -56,6 +70,11 @@ impl TdispNoopResourceValidator {
     /// Returns the MMIO ranges that were unblocked, in call order.
     pub fn unblocked_mmio_ranges(&self) -> Vec<UnblockedMmioRange> {
         self.unblocked_mmio_ranges.lock().clone()
+    }
+
+    /// Returns the shared MMIO ranges that were accepted, in call order.
+    pub fn accepted_shared_mmio_ranges(&self) -> Vec<AcceptedSharedMmioRange> {
+        self.accepted_shared_mmio_ranges.lock().clone()
     }
 
     /// Returns `true` if DMA was unblocked.
@@ -147,6 +166,24 @@ impl TdispResourceValidationInterface for TdispNoopResourceValidator {
             });
             Ok(())
         })
+    }
+
+    fn tdisp_accept_shared_mmio(
+        &self,
+        target_vtl: Vtl,
+        base_gpa: u64,
+        length_in_bytes: u64,
+        range_id: u16,
+    ) -> anyhow::Result<()> {
+        self.accepted_shared_mmio_ranges
+            .lock()
+            .push(AcceptedSharedMmioRange {
+                target_vtl,
+                base_gpa,
+                length_in_bytes,
+                range_id,
+            });
+        Ok(())
     }
 
     fn tdisp_unblock_dma(&self, target_vtl: Vtl, device_id: u16) -> anyhow::Result<()> {
