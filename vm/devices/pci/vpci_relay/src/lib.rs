@@ -254,10 +254,12 @@ impl VpciRelay {
         isolation_type: IsolationType,
         vtom: Option<u64>,
         vtl0_mmio: Vec<MemoryRange>,
-        options: VpciRelayOptions,
+        mut options: VpciRelayOptions,
     ) -> Self {
         // Setup test-specific values since TDISP tests don't necessarily take place inside a CVM runner.
         let target_isolation_type = if options.test_tdisp_flow {
+            // The mocked flow attests as SNP, which never allows unattested devices.
+            options.allow_unattested_devices = false;
             IsolationType::Snp
         } else {
             isolation_type

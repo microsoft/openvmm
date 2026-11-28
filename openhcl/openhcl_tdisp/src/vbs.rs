@@ -165,7 +165,7 @@ impl TdispResourceValidationInterface for TdispVbsResourceValidator {
         let skipped = accept_mapped_pages(&self.hvcall, range)
             .with_context(|| format!("failed to accept BAR {range_id} at {range}"))?;
         let skipped = skipped.iter().map(|r| r.to_string()).collect::<Vec<_>>();
-        tracing::info!(
+        tracelimit::info_ratelimited!(
             bar_id = range_id,
             %range,
             skipped = %skipped.join(", "),
