@@ -320,30 +320,69 @@ impl BlockDevice {
         })
     }
 
-    async fn verify_read(
-        &self,
-        file: &Arc<fs::File>,
-        sector: u64,
-        actual: &[u8],
-    ) -> Result<(), DiskError> {
-        let file = file.clone();
-        let len = actual.len();
-        let offset = sector * self.sector_size as u64;
-        let expected = unblock(move || {
+    async fn buffered_reference(
+        file: Arc<fs::File>,
+        offset: u64,
+        len: usize,
+    ) -> std::io::Result<Vec<u8>> {
+        unblock(move || {
             let mut expected = vec![0; len];
             file.read_exact_at(&mut expected, offset)?;
             Ok::<_, std::io::Error>(expected)
         })
         .await
-        .map_err(|error| {
+    }
+
+    async fn fresh_direct_read(&self, sector: u64, len: usize) -> Result<Vec<u8>, DiskError> {
+        let mut bounce = MaybeBounceBuffer::Untracked(BounceBuffer::new(len));
+        let io_vecs = bounce.io_vecs();
+        // SAFETY: this fresh buffer remains alive until the operation completes
+        // or is cancelled on drop, as for read_vectored.
+        let bytes_read = unsafe {
+            self.driver.io_uring_submit(
+                opcode::Readv::new(
+                    types::Fd(self.file.as_raw_fd()),
+                    io_vecs.as_ptr().cast(),
+                    io_vecs.len() as u32,
+                )
+                .offset(sector * self.sector_size as u64)
+                .build(),
+            )
+        }
+        .await
+        .map_err(|error| self.map_io_error(error))?;
+        if bytes_read != len as i32 {
             tracing::error!(
                 sector,
                 len,
-                error = &error as &dyn std::error::Error,
-                "PCAT_READ_VERIFY: independent buffered read failed"
+                bytes_read,
+                "PCAT_TRIANGULATE: short direct reread"
             );
-            DiskError::Io(error)
-        })?;
+            return Err(DiskError::IllegalBlock);
+        }
+        Ok(bounce.as_mut_bytes().to_vec())
+    }
+
+    async fn verify_read(
+        &self,
+        file: &Arc<fs::File>,
+        sector: u64,
+        actual: &[u8],
+        buffers: &RequestBuffers<'_>,
+    ) -> Result<(), DiskError> {
+        let len = actual.len();
+        let offset = sector * self.sector_size as u64;
+        let expected = Self::buffered_reference(file.clone(), offset, len)
+            .await
+            .map_err(|error| {
+                tracing::error!(
+                    sector,
+                    len,
+                    error = &error as &dyn std::error::Error,
+                    "PCAT_READ_VERIFY: independent buffered read failed"
+                );
+                DiskError::Io(error)
+            })?;
 
         if let Some(first_byte) = actual.iter().zip(&expected).position(|(a, b)| a != b) {
             tracing::error!(
@@ -351,6 +390,42 @@ impl BlockDevice {
                 len,
                 first_byte,
                 "PCAT_READ_VERIFY: request buffer differs from independent buffered read"
+            );
+            let fresh = self.fresh_direct_read(sector, len).await?;
+            let repeated = Self::buffered_reference(file.clone(), offset, len)
+                .await
+                .map_err(|error| {
+                    tracing::error!(
+                        sector,
+                        len,
+                        error = &error as &dyn std::error::Error,
+                        "PCAT_TRIANGULATE: repeated reference read failed"
+                    );
+                    DiskError::Io(error)
+                })?;
+            let mut live = vec![0; len];
+            buffers.reader().read(&mut live)?;
+            let digest = |bytes: &[u8]| {
+                use std::hash::Hash;
+                use std::hash::Hasher;
+                let mut hasher = std::collections::hash_map::DefaultHasher::new();
+                bytes.hash(&mut hasher);
+                hasher.finish()
+            };
+            tracing::error!(
+                sector,
+                len,
+                first_byte,
+                original_digest = digest(actual),
+                reference_digest = digest(&expected),
+                direct_digest = digest(&fresh),
+                repeated_reference_digest = digest(&repeated),
+                live_digest = digest(&live),
+                buffer_changed = actual != live,
+                reference_changed = expected != repeated,
+                direct_matches_reference = fresh == repeated,
+                direct_matches_original = fresh == actual,
+                "PCAT_TRIANGULATE: mismatch read matrix"
             );
             return Err(DiskError::Io(std::io::Error::other(format!(
                 "PCAT_READ_VERIFY mismatch: sector={sector} len={len} first_byte={first_byte}"
@@ -702,7 +777,7 @@ impl DiskIo for BlockDevice {
             let _guard = self.read_verification_lock.lock().await;
             let mut actual = vec![0; io_size];
             buffers.reader().read(&mut actual)?;
-            self.verify_read(file, sector, &actual).await?;
+            self.verify_read(file, sector, &actual, buffers).await?;
         }
         Ok(())
     }
@@ -1104,9 +1179,15 @@ mod tests {
         file.write_all_at(&data, 0).unwrap();
         let device = new_block_device_from(file, true).unwrap();
         let verifier = device.read_verification_file.as_ref().unwrap();
-        block_on(device.verify_read(verifier, 0, &data)).unwrap();
+        let memory = GuestMemory::allocate(data.len());
+        memory.write_at(0, &data).unwrap();
+        let pages = [0];
+        let range = guestmem::ranges::PagedRange::new(0, data.len(), &pages).unwrap();
+        let buffers = RequestBuffers::new(&memory, range, true);
+        block_on(device.verify_read(verifier, 0, &data, &buffers)).unwrap();
         data[37] ^= 1;
-        let error = block_on(device.verify_read(verifier, 0, &data)).unwrap_err();
+        memory.write_at(0, &data).unwrap();
+        let error = block_on(device.verify_read(verifier, 0, &data, &buffers)).unwrap_err();
         let DiskError::Io(error) = error else {
             panic!("expected an I/O error for mismatched read data");
         };
