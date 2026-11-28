@@ -168,7 +168,7 @@ impl KeepAliveConfig {
 }
 
 // We've made our own parser here instead of using something like clap in order
-// to save on compiled file size. We don't need all the features a crate can provide.
+// to save on compiled file size. We don't need all of the features a crate can provide.
 /// underhill core command-line and environment variable options.
 pub struct Options {
     /// (OPENHCL_WAIT_FOR_START=1 | --wait-for-start)
