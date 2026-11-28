@@ -116,6 +116,20 @@ async fn basic_servicing<T: PetriVmmBackend>(
     openhcl_servicing_core(config, igvm_file, flags, DEFAULT_SERVICING_COUNT).await
 }
 
+#[vmm_test(
+    hyperv_openhcl_pcat_x64(vhd(ubuntu_2504_server_x64))[LATEST_STANDARD_X64],
+)]
+async fn basic_servicing_vmbus_5_3<T: PetriVmmBackend>(
+    config: PetriVmBuilder<T>,
+    (igvm_file,): (ResolvedArtifact<impl petri_artifacts_common::tags::IsOpenhclIgvm>,),
+) -> anyhow::Result<()> {
+    basic_servicing(
+        config.with_openhcl_command_line("hv_vmbus.max_version=0x00050003"),
+        (igvm_file,),
+    )
+    .await
+}
+
 /// Test servicing an OpenHCL VM from the current version to itself, with a tpm.
 #[vmm_test(
     openvmm_openhcl_uefi_x64(vhd(ubuntu_2504_server_x64))[LATEST_STANDARD_X64],
@@ -386,6 +400,23 @@ async fn servicing_downgrade<T: PetriVmmBackend>(
         to_igvm,
         flags,
         DEFAULT_SERVICING_COUNT,
+    )
+    .await
+}
+
+#[vmm_test(
+    hyperv_openhcl_pcat_x64(vhd(ubuntu_2504_server_x64))[LATEST_STANDARD_X64, LATEST_RELEASE_STANDARD_X64],
+)]
+async fn servicing_downgrade_vmbus_5_3<T: PetriVmmBackend>(
+    config: PetriVmBuilder<T>,
+    (from_igvm, to_igvm): (
+        ResolvedArtifact<impl petri_artifacts_common::tags::IsOpenhclIgvm>,
+        ResolvedArtifact<impl petri_artifacts_common::tags::IsOpenhclIgvm>,
+    ),
+) -> anyhow::Result<()> {
+    servicing_downgrade(
+        config.with_openhcl_command_line("hv_vmbus.max_version=0x00050003"),
+        (from_igvm, to_igvm),
     )
     .await
 }

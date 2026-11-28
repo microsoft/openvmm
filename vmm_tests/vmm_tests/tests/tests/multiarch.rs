@@ -143,6 +143,14 @@ async fn boot<T: PetriVmmBackend>(config: PetriVmBuilder<T>) -> anyhow::Result<(
     Ok(())
 }
 
+#[vmm_test(
+    hyperv_openhcl_pcat_x64(vhd(windows_datacenter_core_2022_x64)),
+    hyperv_openhcl_pcat_x64(vhd(ubuntu_2504_server_x64))
+)]
+async fn boot_vmbus_5_3<T: PetriVmmBackend>(config: PetriVmBuilder<T>) -> anyhow::Result<()> {
+    boot(config.with_openhcl_command_line("hv_vmbus.max_version=0x00050003")).await
+}
+
 /// Basic boot test using virtio vsock instead of vmbus hvsocket.
 /// N.B. Because this requires kernel support, it's only done for Linux direct boot since the test
 ///      kernel is guaranteed to include it.
@@ -703,6 +711,14 @@ async fn boot_heavy<T: PetriVmmBackend>(config: PetriVmBuilder<T>) -> anyhow::Re
     Ok(())
 }
 
+#[vmm_test(
+    hyperv_openhcl_pcat_x64(vhd(windows_datacenter_core_2022_x64)),
+    hyperv_openhcl_pcat_x64(vhd(ubuntu_2504_server_x64))
+)]
+async fn boot_heavy_vmbus_5_3<T: PetriVmmBackend>(config: PetriVmBuilder<T>) -> anyhow::Result<()> {
+    boot_heavy(config.with_openhcl_command_line("hv_vmbus.max_version=0x00050003")).await
+}
+
 /// Basic boot test with a single VP.
 #[vmm_test(
     openvmm_openhcl_uefi_x64[vbs](vhd(windows_datacenter_core_2025_x64_prepped)),
@@ -822,6 +838,14 @@ async fn reboot<T: PetriVmmBackend>(config: PetriVmBuilder<T>) -> Result<(), any
     agent.power_off().await?;
     vm.wait_for_clean_teardown().await?;
     Ok(())
+}
+
+#[vmm_test(
+    hyperv_openhcl_pcat_x64(vhd(windows_datacenter_core_2022_x64)),
+    hyperv_openhcl_pcat_x64(vhd(ubuntu_2504_server_x64))
+)]
+async fn reboot_vmbus_5_3<T: PetriVmmBackend>(config: PetriVmBuilder<T>) -> anyhow::Result<()> {
+    reboot(config.with_openhcl_command_line("hv_vmbus.max_version=0x00050003")).await
 }
 
 /// Preserve a multi-socket topology and agent connectivity across repeated resets.
