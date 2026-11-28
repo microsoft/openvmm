@@ -27,6 +27,9 @@ pub enum TestScenarioConfig {
 
     /// Verifies block reads and IDE DMA readback while diagnosing PCAT boot failures.
     PcatReadVerify,
+
+    /// Verifies PCAT reads while avoiding zero-copy writes into kernel-pinned guest pages.
+    PcatReadVerifyBounce,
 }
 
 impl FromStr for TestScenarioConfig {
@@ -39,6 +42,7 @@ impl FromStr for TestScenarioConfig {
             "SERVICING_SAVE_STUCK" => Ok(TestScenarioConfig::SaveStuck),
             "TDISP_VPCI_FLOW_TEST" => Ok(TestScenarioConfig::VpciTdispFlow),
             "PCAT_READ_VERIFY" => Ok(TestScenarioConfig::PcatReadVerify),
+            "PCAT_READ_VERIFY_BOUNCE" => Ok(TestScenarioConfig::PcatReadVerifyBounce),
             _ => Err(anyhow::anyhow!("Invalid test config: {}", s)),
         }
     }

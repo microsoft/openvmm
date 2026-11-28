@@ -40,6 +40,9 @@ use vmm_test_macros::vmm_test_with;
 #[cfg(windows)]
 const PCAT_READ_VERIFY_CMDLINE: &str = "OPENHCL_TEST_CONFIG=PCAT_READ_VERIFY";
 
+#[cfg(windows)]
+const PCAT_READ_VERIFY_BOUNCE_CMDLINE: &str = "OPENHCL_TEST_CONFIG=PCAT_READ_VERIFY_BOUNCE";
+
 /// Test for the Windows DirectIO (`-net dio`) network backend.
 mod dio_nic;
 /// Guest hibernation and OpenHCL hibernate token tests.
@@ -155,6 +158,17 @@ async fn boot_pcat_read_verify<T: PetriVmmBackend>(
     config: PetriVmBuilder<T>,
 ) -> anyhow::Result<()> {
     boot(config.with_openhcl_command_line(PCAT_READ_VERIFY_CMDLINE)).await
+}
+
+#[cfg(windows)]
+#[vmm_test(
+    hyperv_openhcl_pcat_x64(vhd(windows_datacenter_core_2022_x64)),
+    hyperv_openhcl_pcat_x64(vhd(ubuntu_2504_server_x64))
+)]
+async fn boot_pcat_read_verify_bounce<T: PetriVmmBackend>(
+    config: PetriVmBuilder<T>,
+) -> anyhow::Result<()> {
+    boot(config.with_openhcl_command_line(PCAT_READ_VERIFY_BOUNCE_CMDLINE)).await
 }
 
 /// Basic boot test using virtio vsock instead of vmbus hvsocket.
@@ -728,6 +742,17 @@ async fn boot_heavy_pcat_read_verify<T: PetriVmmBackend>(
     boot_heavy(config.with_openhcl_command_line(PCAT_READ_VERIFY_CMDLINE)).await
 }
 
+#[cfg(windows)]
+#[vmm_test(
+    hyperv_openhcl_pcat_x64(vhd(windows_datacenter_core_2022_x64)),
+    hyperv_openhcl_pcat_x64(vhd(ubuntu_2504_server_x64))
+)]
+async fn boot_heavy_pcat_read_verify_bounce<T: PetriVmmBackend>(
+    config: PetriVmBuilder<T>,
+) -> anyhow::Result<()> {
+    boot_heavy(config.with_openhcl_command_line(PCAT_READ_VERIFY_BOUNCE_CMDLINE)).await
+}
+
 /// Basic boot test with a single VP.
 #[vmm_test(
     openvmm_openhcl_uefi_x64[vbs](vhd(windows_datacenter_core_2025_x64_prepped)),
@@ -858,6 +883,17 @@ async fn reboot_pcat_read_verify<T: PetriVmmBackend>(
     config: PetriVmBuilder<T>,
 ) -> anyhow::Result<()> {
     reboot(config.with_openhcl_command_line(PCAT_READ_VERIFY_CMDLINE)).await
+}
+
+#[cfg(windows)]
+#[vmm_test(
+    hyperv_openhcl_pcat_x64(vhd(windows_datacenter_core_2022_x64)),
+    hyperv_openhcl_pcat_x64(vhd(ubuntu_2504_server_x64))
+)]
+async fn reboot_pcat_read_verify_bounce<T: PetriVmmBackend>(
+    config: PetriVmBuilder<T>,
+) -> anyhow::Result<()> {
+    reboot(config.with_openhcl_command_line(PCAT_READ_VERIFY_BOUNCE_CMDLINE)).await
 }
 
 /// Preserve a multi-socket topology and agent connectivity across repeated resets.

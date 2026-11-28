@@ -97,7 +97,7 @@ mod linux {
         let memory = GuestMemory::new("ata_buffer", Arc::new(AlignedHeapMemory::new(65536)));
         let mut control = None;
         let mut selected = None;
-        for verify in [false, true] {
+        for (verify, always_bounce) in [(false, false), (true, false), (true, true)] {
             let file = open_file_for_block(Path::new(&path), true, true)?;
             let disk = block_on(BlockDevice::new(
                 file,
@@ -105,7 +105,7 @@ mod linux {
                 client.initiator().clone(),
                 None,
                 None,
-                false,
+                always_bounce,
                 verify,
             ))?;
             if disk.sector_size() != 512 || disk.sector_count() <= 128 {
@@ -117,7 +117,7 @@ mod linux {
             let selected = selected.as_deref().ok_or("missing selected test sectors")?;
             let result = block_on(exercise(&disk, &memory, selected, iterations))?;
             println!(
-                "RESULT verify={verify} reads={iterations} nonzero={} digest={:#x}",
+                "RESULT verify={verify} bounce={always_bounce} reads={iterations} nonzero={} digest={:#x}",
                 result.1, result.0
             );
             if result.1 != iterations {

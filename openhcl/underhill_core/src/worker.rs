@@ -2086,10 +2086,15 @@ async fn new_underhill_vm(
     let proto_partition = UhProtoPartition::new(&params, |cpu| tp.driver(cpu).clone())
         .context("failed to create prototype partition")?;
 
-    let pcat_read_verify = matches!(
+    let pcat_read_bounce = matches!(
         env_cfg.test_configuration,
-        Some(TestScenarioConfig::PcatReadVerify)
+        Some(TestScenarioConfig::PcatReadVerifyBounce)
     );
+    let pcat_read_verify = pcat_read_bounce
+        || matches!(
+            env_cfg.test_configuration,
+            Some(TestScenarioConfig::PcatReadVerify)
+        );
     if pcat_read_verify {
         anyhow::ensure!(
             !isolation.is_isolated(),
@@ -2607,7 +2612,11 @@ async fn new_underhill_vm(
     //
     // Currently we always bounce for CVM as well, due to underhill_mem not
     // supporting registering shared or private memory with the kernel.
-    let always_bounce = cfg!(guest_arch = "aarch64") || isolation.is_hardware_isolated();
+    let always_bounce =
+        cfg!(guest_arch = "aarch64") || isolation.is_hardware_isolated() || pcat_read_bounce;
+    if pcat_read_bounce {
+        tracing::info!("PCAT_READ_VERIFY_BOUNCE: avoiding kernel-pinned guest destinations");
+    }
     resolver.add_async_resolver::<DiskHandleKind, _, BlockDeviceDiskHandle, _>(
         BlockDeviceResolver::new(
             Some(uevent_listener.clone()),
